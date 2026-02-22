@@ -1,0 +1,7 @@
+User-agent: *
+Allow: /
+
+# Note pages should not be indexed, they contain sensitive content
+Disallow: /note/
+
+Sitemap: https://onetimenote.netlify.app/sitemap.xml

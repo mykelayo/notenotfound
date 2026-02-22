@@ -2,11 +2,251 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>onetimote</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="canonical" href="https://onetimenote.netlify.app" />
+
+    <!-- ═══════════════════════════════════════════
+         PRIMARY SEO
+    ═══════════════════════════════════════════ -->
+    <title>OneTimeNote — Share Secrets with Self-Destructing Links</title>
+    <meta name="description" content="Create encrypted notes that self-destruct after one read. Share passwords, API keys, and sensitive info safely. AES-256 encrypted. Free. No sign-up required." />
+    <meta name="keywords" content="self destructing notes, one time note, burn after reading, share passwords safely, encrypted notes, privnote alternative, onetimesecret alternative, secure note sharing, temporary notes, ephemeral messages" />
+    <meta name="author" content="mykelayo" />
+    <meta name="robots" content="index, follow" />
+    <meta name="theme-color" content="#faf5ee" />
+    <link rel="sitemap" type="application/xml" href="/sitemap.xml" />
+
+    <!-- ═══════════════════════════════════════════
+         OPEN GRAPH — controls how link looks when
+         shared on LinkedIn, Slack, Discord, iMessage
+    ═══════════════════════════════════════════ -->
+    <meta property="og:type"        content="website" />
+    <meta property="og:url"         content="https://onetimenote.netlify.app" />
+    <meta property="og:title"       content="OneTimeNote — Self-Destructing Encrypted Notes" />
+    <meta property="og:description" content="Write a secret note. Share the link. It vanishes the moment someone reads it. AES-256 encrypted. Free forever." />
+    <meta property="og:image"       content="https://onetimenote.netlify.app/og-image.png" />
+    <meta property="og:image:width"  content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt"   content="OneTimeNote — Self-Destructing Encrypted Notes" />
+    <meta property="og:site_name"   content="OneTimeNote" />
+    <meta property="og:locale"      content="en_US" />
+
+    <!-- ═══════════════════════════════════════════
+         TWITTER / X CARD
+    ═══════════════════════════════════════════ -->
+    <meta name="twitter:card"        content="summary_large_image" />
+    <meta name="twitter:url"         content="https://onetimenote.netlify.app" />
+    <meta name="twitter:title"       content="OneTimeNote — Self-Destructing Encrypted Notes" />
+    <meta name="twitter:description" content="Write a secret note. Share the link. It vanishes after one read. Free forever." />
+    <meta name="twitter:image"       content="https://onetimenote.netlify.app/og-image.png" />
+    <meta name="twitter:creator"     content="@mykelayo" />
+    <meta name="twitter:site"        content="@mykelayo" />
+
+    <!-- ═══════════════════════════════════════════
+         SCHEMA.ORG — WebApplication
+         Tells Google exactly what this site is
+    ═══════════════════════════════════════════ -->
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "WebApplication",
+      "name": "OneTimeNote",
+      "alternateName": ["One Time Note", "Self Destructing Notes", "Burn After Reading"],
+      "url": "https://onetimenote.netlify.app",
+      "description": "Create encrypted notes that permanently self-destruct after one read. Share passwords, API keys, and sensitive information safely.",
+      "applicationCategory": "SecurityApplication",
+      "operatingSystem": "Any",
+      "browserRequirements": "Requires JavaScript",
+      "offers": {
+        "@type": "Offer",
+        "price": "0",
+        "priceCurrency": "USD",
+        "description": "Free forever, no sign-up required"
+      },
+      "featureList": [
+        "AES-256-GCM end-to-end encryption",
+        "Self-destructing notes — deleted after one read",
+        "Optional password protection",
+        "Auto-expiry (1 hour to 7 days)",
+        "Zero logs — no content inspection",
+        "Free REST API",
+        "No account required"
+      ],
+      "screenshot": "https://onetimenote.netlify.app/og-image.png",
+      "author": {
+        "@type": "Person",
+        "name": "mykelayo",
+        "url": "https://github.com/mykelayo"
+      },
+      "creator": {
+        "@type": "Person",
+        "name": "mykelayo",
+        "url": "https://github.com/mykelayo"
+      }
+    }
+    </script>
+
+    <!-- ═══════════════════════════════════════════
+         SCHEMA.ORG — FAQPage
+         Unlocks expandable Q&A directly in Google results
+    ═══════════════════════════════════════════ -->
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "FAQPage",
+      "mainEntity": [
+        {
+          "@type": "Question",
+          "name": "Is OneTimeNote secure?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "Yes. Notes are encrypted with AES-256-GCM before they are stored. The encryption key is never exposed to the public. Notes are permanently deleted from the server the moment the recipient opens them. We do not log IP addresses or note contents."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "How does the self-destructing note work?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "When you create a note, it is encrypted and stored in a database with a unique ID. When the recipient opens the link, they see a confirmation screen. Once they click 'Read & Destroy', the note is decrypted and immediately deleted from the database. The link is then dead forever, no one can read it again."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "What happens if nobody opens the note?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "You can set an expiry time when creating the note — 1 hour, 24 hours, 3 days, or 7 days. If the note is never opened, it is automatically deleted when the expiry time passes."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "Can I add a password to a note?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "Yes. When creating a note, you can optionally add a password. The recipient will need to enter the correct password before they can read the note. Passwords are hashed with SHA-256 before storage, the raw password is never saved."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "Is there an API for OneTimeNote?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "Yes, a free REST API is available at onetimenote.netlify.app/api. POST to /api/create-note to create a note and receive a unique ID. POST to /api/read-note with confirm: true to read and permanently destroy a note. No API key required."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "What is a good Privnote alternative?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "OneTimeNote is a free, open-source Privnote alternative. It offers AES-256 encryption, optional password protection, configurable expiry times, and a free API. Unlike Privnote, it is fully open source so you can audit the code or self-host it."
+          }
+        }
+      ]
+    }
+    </script>
+
+    <!-- ═══════════════════════════════════════════
+         SCHEMA.ORG — Person / Identity
+         Links the site to your GitHub identity
+    ═══════════════════════════════════════════ -->
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "Person",
+      "name": "mykelayo",
+      "url": "https://github.com/mykelayo",
+      "sameAs": [
+        "https://github.com/mykelayo"
+      ]
+    }
+    </script>
+
+    <!-- Google tag (gtag.js) -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=G-2YZJ6WXL4G"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+
+      gtag('config', 'G-2YZJ6WXL4G');
+    </script>
+
+
+    <!-- ═══════════════════════════════════════════
+         FONTS — preconnect for performance
+    ═══════════════════════════════════════════ -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,600;0,700;1,600&family=DM+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" />
+
   </head>
   <body>
+
+    <!--
+      ═══════════════════════════════════════════
+      STATIC SEO CONTENT
+      ═══════════════════════════════════════════
+    -->
+    <div
+      aria-hidden="true"
+      style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0;"
+    >
+      <h1>OneTimeNote — Self-Destructing Encrypted Notes</h1>
+      <h2>Share secrets safely with links that vanish after one read</h2>
+      <p>
+        OneTimeNote is a free, open-source tool for sharing sensitive information safely.
+        Write a private note, get a unique link, and share it. The moment the recipient
+        opens the link, the note is permanently deleted from the server. The link is then
+        dead forever — nobody can read it again, not even us.
+      </p>
+
+      <h2>How OneTimeNote works</h2>
+      <p>
+        Your note is encrypted with AES-256-GCM before it is stored. When you create a note,
+        you receive a unique one-time URL. The recipient opens the link and sees a confirmation
+        screen warning them the note will be destroyed when they read it. After they confirm,
+        the note is decrypted, displayed once, and immediately deleted from the database.
+      </p>
+
+      <h2>Security features</h2>
+      <p>AES-256-GCM encryption — the same standard used by banks and governments.</p>
+      <p>Optional password protection — recipients must enter the correct password to read the note.</p>
+      <p>Auto-expiry — notes auto-delete after 1 hour, 24 hours, 3 days, or 7 days even if never read.</p>
+      <p>Zero logs — we do not store IP addresses, access timestamps, or note contents in logs.</p>
+      <p>Open source — the full source code is available on GitHub for anyone to audit.</p>
+
+      <h2>What to use OneTimeNote for</h2>
+      <p>Sharing server passwords and database credentials with teammates.</p>
+      <p>Sending API keys and access tokens without leaving a permanent trail.</p>
+      <p>Sharing private messages that should not live forever in chat history.</p>
+      <p>Temporary access credentials for contractors and freelancers.</p>
+      <p>Sensitive client information that must not be stored in email.</p>
+
+      <h2>Free Privnote alternative</h2>
+      <p>
+        Looking for a Privnote alternative or OnetimeSecret alternative? OneTimeNote
+        is a free, open-source alternative with AES-256 encryption, optional password
+        protection, configurable expiry, and a free developer API.
+      </p>
+
+      <h2>Free API for developers</h2>
+      <p>
+        OneTimeNote provides a free REST API. Send a POST request to /api/create-note
+        with your note content to receive a unique shareable link. Use /api/read-note
+        to retrieve and destroy a note programmatically. No API key required.
+      </p>
+
+      <h2>Frequently asked questions</h2>
+      <p>Is OneTimeNote free? Yes, completely free with no sign-up required.</p>
+      <p>Is my note encrypted? Yes, with AES-256-GCM before it leaves your browser.</p>
+      <p>Can I add a password? Yes, optional password protection is available.</p>
+      <p>What happens if the note expires? It is automatically and permanently deleted.</p>
+      <p>Can I self-host OneTimeNote? Yes, the full source code is on GitHub.</p>
+    </div>
+
     <div id="root"></div>
     <script type="module" src="/src/main.jsx"></script>
   </body>
