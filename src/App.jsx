@@ -42,31 +42,33 @@ function track(name, params = {}) {
   if (typeof window.gtag === "function") window.gtag("event", name, params);
 }
 
-// ── Safe fetch, always checks Content-Type before calling .json()
+// ── safeFetch ─────────────────────────────────────────────────────────────────
+// Checks Content-Type before calling .json()
+// Prevents "Unexpected end of JSON" when Vite dev server returns HTML for /api/* routes
+// Locally: use `netlify dev` — NOT `npm run dev` — or API calls will fail
 async function safeFetch(url, options) {
   let res;
   try {
     res = await fetch(url, options);
-  } catch (networkErr) {
-    throw new Error("Network error! Are you connected to the internet?");
+  } catch (err) {
+    throw new Error("Network error. Check your connection.");
   }
 
-  const contentType = res.headers.get("content-type") || "";
-  if (!contentType.includes("application/json")) {
-    // Got HTML or something else
+  const ct = res.headers.get("content-type") || "";
+  if (!ct.includes("application/json")) {
     if (res.status === 404) {
       throw new Error(
-        "API not reachable. If running locally, use `netlify dev`. not `npm run dev`."
+        "API route not found. If running locally, use `netlify dev` instead of `npm run dev`."
       );
     }
-    throw new Error(`Server error (${res.status}). Try again or check Netlify function logs.`);
+    throw new Error(`Unexpected server response (${res.status}). Check Netlify function logs.`);
   }
 
   const data = await res.json();
   return { data, status: res.status, ok: res.ok };
 }
 
-// ── API calls (all relative paths) ───────────────────────────────────────────
+// ── API calls ─────────────────────────────────────────────────────────────────
 
 async function apiCreateNote(content, password, expirySeconds) {
   const { data, ok } = await safeFetch("/api/create-note", {
@@ -75,11 +77,11 @@ async function apiCreateNote(content, password, expirySeconds) {
     body:    JSON.stringify({ content, password: password || null, expirySeconds }),
   });
   if (!ok) throw new Error(data.error || "Failed to create note.");
-  return data; // { id, expiresAt }
+  return data;
 }
 
+// Step 1: check note exists, get metadata — does NOT destroy note
 async function apiCheckNote(id, password) {
-  // Step 1: confirm = false — get metadata, note NOT destroyed
   const body = { id, confirm: false };
   if (password) body.password = password;
   const { data, status } = await safeFetch("/api/read-note", {
@@ -90,8 +92,8 @@ async function apiCheckNote(id, password) {
   return { ...data, _status: status };
 }
 
+// Step 2: read content and destroy note
 async function apiDestroyNote(id, password) {
-  // Step 2: confirm = true — GETDEL: atomically read content + delete note
   const body = { id, confirm: true };
   if (password) body.password = password;
   const { data, status, ok } = await safeFetch("/api/read-note", {
@@ -129,7 +131,6 @@ function CreateView() {
       track("note_created", { expiry_seconds: expiry, has_password: !!password });
     } catch (err) {
       setError(err.message);
-      track("note_create_error", { error: err.message });
     } finally {
       setLoading(false);
     }
@@ -168,7 +169,6 @@ function CreateView() {
           <button
             style={{ ...S.amberBtn, ...(copied ? S.amberBtnDone : {}) }}
             onClick={copyLink}
-            aria-label="Copy shareable link"
             className="amber-btn"
           >
             {copied ? "✓ Copied to clipboard" : "Copy link"}
@@ -206,8 +206,8 @@ function CreateView() {
           aria-label="Note content"
         />
         <div style={S.charRow}>
-          {overLimit && <span style={S.charErr} role="alert">Over limit — trim your note</span>}
-          {nearLimit && !overLimit && <span style={S.charWarn}>{(MAX_CHARS - chars).toLocaleString()} characters left</span>}
+          {overLimit  && <span style={S.charErr}>Over limit — trim your note</span>}
+          {nearLimit && !overLimit && <span style={S.charWarn}>{(MAX_CHARS - chars).toLocaleString()} left</span>}
           {!nearLimit && !overLimit && <span />}
           <span style={{ ...S.charNum, color: overLimit ? C.red : nearLimit ? C.amber : C.muted }}>
             {chars.toLocaleString()} / {MAX_CHARS.toLocaleString()}
@@ -218,14 +218,13 @@ function CreateView() {
       <div style={S.optionsGrid}>
         <div style={S.optBlock}>
           <label style={S.optLabel}>EXPIRES IN</label>
-          <div style={S.segGroup} role="group" aria-label="Expiry time">
+          <div style={S.segGroup}>
             {EXPIRY_OPTIONS.map((opt) => (
               <button
                 key={opt.seconds}
                 style={{ ...S.seg, ...(expiry === opt.seconds ? S.segOn : {}) }}
                 className={`seg ${expiry === opt.seconds ? "seg-on" : ""}`}
                 onClick={() => setExpiry(opt.seconds)}
-                aria-pressed={expiry === opt.seconds}
               >
                 {opt.label}
               </button>
@@ -243,10 +242,8 @@ function CreateView() {
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               className="pass-input"
-              aria-label="Optional password"
             />
-            <button style={S.showPassBtn} onClick={() => setShowPass((p) => !p)}
-              className="show-pass-btn" aria-label={showPass ? "Hide password" : "Show password"}>
+            <button style={S.showPassBtn} onClick={() => setShowPass((p) => !p)} className="show-pass-btn">
               {showPass ? "Hide" : "Show"}
             </button>
           </div>
@@ -265,7 +262,6 @@ function CreateView() {
         onClick={handleCreate}
         disabled={!canSubmit}
         className="primary-btn"
-        aria-label="Create secret link"
       >
         {loading
           ? <><span style={S.btnSpinner} className="btn-spin" /> Creating...</>
@@ -282,7 +278,6 @@ function CreateView() {
 // ── Read View ─────────────────────────────────────────────────────────────────
 
 function ReadView({ noteId }) {
-  // Phases: loading → (password?) → confirm → content | dead | error
   const [phase,    setPhase]    = useState("loading");
   const [meta,     setMeta]     = useState(null);
   const [password, setPassword] = useState("");
@@ -292,40 +287,33 @@ function ReadView({ noteId }) {
   const [loading,  setLoading]  = useState(false);
   const [errMsg,   setErrMsg]   = useState(null);
 
-  // Step 1: check note exists on mount
+  // Step 1: check note exists on mount — does NOT destroy note
   useEffect(() => {
     let cancelled = false;
-    async function checkNote() {
+    async function check() {
       try {
         const data = await apiCheckNote(noteId, null);
         if (cancelled) return;
         if (data._status === 404) {
           setPhase("dead");
-          track("note_not_found");
         } else if (data._status === 401 || data.passwordRequired) {
           setPhase("password");
-          track("note_password_required");
         } else if (data._status === 200 && data.exists) {
           setMeta(data);
           setPhase("confirm");
-          track("note_found");
         } else {
-          // Unexpected — show error but don't declare dead since we didn't destroy anything
-          setErrMsg(data.error || "Unexpected response from server.");
+          setErrMsg(data.error || "Unexpected server response.");
           setPhase("error");
         }
       } catch (err) {
-        if (!cancelled) {
-          setErrMsg(err.message);
-          setPhase("error");
-        }
+        if (!cancelled) { setErrMsg(err.message); setPhase("error"); }
       }
     }
-    checkNote();
+    check();
     return () => { cancelled = true; };
   }, [noteId]);
 
-  // Password submit (still confirm: false — just verifying the password)
+  // Password check (still confirm:false — just verifying password, not destroying)
   async function handlePasswordSubmit() {
     if (!password.trim()) return;
     setLoading(true);
@@ -334,7 +322,6 @@ function ReadView({ noteId }) {
       const data = await apiCheckNote(noteId, password);
       if (data._status === 401 || data._status === 403) {
         setPassErr(true);
-        track("note_wrong_password");
       } else if (data._status === 200 && data.exists) {
         setMeta(data);
         setPhase("confirm");
@@ -352,32 +339,27 @@ function ReadView({ noteId }) {
     }
   }
 
-  // Step 2: read + destroy (atomic GETDEL in backend)
+  // Step 2: decrypt + destroy
   async function handleConfirm() {
     setLoading(true);
     try {
       const data = await apiDestroyNote(noteId, password || null);
 
-      if (data._status === 200 && data.content !== undefined && data.content !== null) {
-        // ✓ Content returned successfully — note has been destroyed
+      if (data._status === 200 && data.content != null) {
+        // Content returned — note successfully read and destroyed
         setContent(data.content);
         setPhase("content");
         track("note_read_and_destroyed");
       } else if (data._status === 404) {
-        // Note was already gone before we could read it
+        // Note was gone before we could read it (already used or expired)
         setPhase("dead");
       } else {
-        // Something went wrong server-side — show the actual error message
-        // Note MAY or MAY NOT have been destroyed — be honest with the user
+        // Something went wrong (e.g. decrypt error) — show specific message
         setErrMsg(data.error || "Something went wrong reading the note.");
         setPhase("error");
-        track("note_read_error", { status: data._status });
       }
     } catch (err) {
-      // Network error, we don't know if the note was destroyed or not
-      setErrMsg(
-        err.message + " , If you see this repeatedly, the note may have been consumed. Check the link again."
-      );
+      setErrMsg(err.message);
       setPhase("error");
     } finally {
       setLoading(false);
@@ -392,22 +374,22 @@ function ReadView({ noteId }) {
     </div>
   );
 
-  // ── Error (server/network) — distinct from "dead" ─────────────────────────
+  // ── Error (network / server) — separate from "dead" ───────────────────────
   if (phase === "error") return (
     <div style={{ ...S.card, alignItems: "center", textAlign: "center" }} className="fade-in">
       <div style={S.phaseIcon}>⚠️</div>
       <h2 style={S.cardTitle}>Something went wrong.</h2>
       <p style={S.cardSub}>{errMsg}</p>
-      <button
-        style={S.ghostBtn}
-        onClick={() => { setErrMsg(null); setPhase("loading"); }}
-        className="ghost-btn"
-      >
-        Try again
-      </button>
-      <a href="/" style={{ ...S.ghostBtn, marginTop: "-8px" }} className="ghost-btn">
-        ← Create a new note
-      </a>
+      <div style={{ display: "flex", gap: "10px", flexWrap: "wrap", justifyContent: "center" }}>
+        <button
+          style={S.ghostBtn}
+          onClick={() => { setErrMsg(null); setPhase("loading"); }}
+          className="ghost-btn"
+        >
+          Try again
+        </button>
+        <a href="/" style={S.ghostBtn} className="ghost-btn">← Create a note</a>
+      </div>
     </div>
   );
 
@@ -417,14 +399,14 @@ function ReadView({ noteId }) {
       <div style={S.deadIcon}>𝕏</div>
       <h2 style={S.cardTitle}>This note no longer exists.</h2>
       <p style={S.cardSub}>
-        It was already read, expired, or never created. One-time notes vanish
-        after a single view, forever, by design.
+        It was already read, has expired, or was never created.
+        One-time notes vanish after a single view — forever, by design.
       </p>
       <a href="/" style={S.ghostBtn} className="ghost-btn">← Create a new note</a>
     </div>
   );
 
-  // ── Password prompt ────────────────────────────────────────────────────────
+  // ── Password ───────────────────────────────────────────────────────────────
   if (phase === "password") return (
     <div style={{ ...S.card, textAlign: "center", alignItems: "center" }} className="fade-in">
       <div style={S.phaseIcon}>🔒</div>
@@ -439,14 +421,12 @@ function ReadView({ noteId }) {
           onChange={(e) => { setPassword(e.target.value); setPassErr(false); }}
           onKeyDown={(e) => e.key === "Enter" && handlePasswordSubmit()}
           autoFocus
-          aria-label="Note password"
-          aria-invalid={passErr}
         />
       </div>
       {passErr && (
         <div style={S.errorBox} role="alert">
           <span style={S.errorIcon}>!</span>
-          Wrong password. Try again.
+          Incorrect password. Try again.
         </div>
       )}
       <button
@@ -460,15 +440,14 @@ function ReadView({ noteId }) {
     </div>
   );
 
-  // ── Confirm / burn ─────────────────────────────────────────────────────────
+  // ── Confirm ────────────────────────────────────────────────────────────────
   if (phase === "confirm") return (
     <div style={{ ...S.card, textAlign: "center", alignItems: "center" }} className="fade-in">
       <div style={S.phaseIcon}>🔥</div>
       <h2 style={S.cardTitle}>Ready to read this note?</h2>
       <p style={S.cardSub}>
-        This is a <strong>one-time note</strong>. The moment you open it, it will be{" "}
-        <strong style={{ color: C.amber }}>permanently deleted</strong> from our servers.
-        There is no undo.
+        This is a <strong>one-time note</strong>. The moment you open it, it is{" "}
+        <strong style={{ color: C.amber }}>permanently deleted</strong>. No undo.
       </p>
       {meta?.createdAt && (
         <div style={S.pillRow}>
@@ -485,7 +464,6 @@ function ReadView({ noteId }) {
         onClick={handleConfirm}
         disabled={loading}
         className="burn-btn"
-        aria-label="Read and permanently destroy note"
       >
         {loading ? "Opening..." : "🔥 Read & destroy this note"}
       </button>
@@ -493,7 +471,7 @@ function ReadView({ noteId }) {
     </div>
   );
 
-  // ── Content — shown after successful GETDEL ────────────────────────────────
+  // ── Content ────────────────────────────────────────────────────────────────
   if (phase === "content") return (
     <div style={S.card} className="fade-in">
       <div style={S.destroyedBadge}>✓ Note destroyed — this was its only view</div>
@@ -507,11 +485,9 @@ function ReadView({ noteId }) {
         onClick={() => {
           navigator.clipboard.writeText(content);
           setCopied(true);
-          track("content_copied");
           setTimeout(() => setCopied(false), 2000);
         }}
         className="amber-btn"
-        aria-label="Copy note content"
       >
         {copied ? "✓ Copied!" : "Copy content"}
       </button>
@@ -519,7 +495,7 @@ function ReadView({ noteId }) {
       <div style={S.warningBox}>
         <span style={S.warningIcon}>⚠</span>
         <span>
-          This note is permanently gone from our servers.{" "}
+          This note is gone from our servers.{" "}
           <strong>Save the content now</strong> — refreshing this page will not bring it back.
         </span>
       </div>
@@ -555,20 +531,18 @@ export default function App() {
     <div style={S.root}>
       <style>{CSS}</style>
 
-      <nav style={S.nav} role="navigation" aria-label="Main navigation">
-        <a href="/" style={S.navLogo} aria-label="OneTimeNote home">
-          <span style={S.navLogoGlyph} aria-hidden="true">◈</span>
-          OneTimeNote
+      <nav style={S.nav}>
+        <a href="/" style={S.navLogo}>
+          <span style={S.navLogoGlyph}>◈</span>OneTimeNote
         </a>
         <div style={S.navRight}>
-          <a href={GITHUB} target="_blank" rel="noreferrer"
-            style={S.navLink} className="nav-link" aria-label="GitHub repository">
+          <a href={GITHUB} target="_blank" rel="noreferrer" style={S.navLink} className="nav-link">
             <GithubIcon />mykelayo
           </a>
         </div>
       </nav>
 
-      <main style={S.main} role="main">
+      <main style={S.main}>
         {!noteId && (
           <div style={S.hero}>
             <div style={S.heroBadge}>Free &amp; Open Source</div>
@@ -578,21 +552,18 @@ export default function App() {
             </h1>
             <p style={S.heroSub}>
               Write a private, encrypted note. Share the link. It self-destructs
-              the moment it's read — and we have no way to recover it.
+              the moment it's read, and we have no way to recover it.
             </p>
           </div>
         )}
         {noteId ? <ReadView noteId={noteId} /> : <CreateView />}
       </main>
 
-      <footer style={S.footer} role="contentinfo">
+      <footer style={S.footer}>
         <div style={S.footerInner}>
-          <span style={S.footerBrand}>
-            <span style={{ color: C.amber }}>◈</span> OneTimeNote
-          </span>
+          <span style={S.footerBrand}><span style={{ color: C.amber }}>◈</span> OneTimeNote</span>
           <span style={S.footerMeta}>AES-256 · Zero logs · MIT License</span>
-          <a href={GITHUB} target="_blank" rel="noreferrer"
-            style={S.footerLink} className="nav-link">
+          <a href={GITHUB} target="_blank" rel="noreferrer" style={S.footerLink} className="nav-link">
             <GithubIcon />mykelayo
           </a>
         </div>
@@ -623,12 +594,8 @@ const C = {
 
 const S = {
   root: {
-    background: C.bg,
-    minHeight: "100vh",
-    fontFamily: "'DM Sans', sans-serif",
-    color: C.text,
-    display: "flex",
-    flexDirection: "column",
+    background: C.bg, minHeight: "100vh", fontFamily: "'DM Sans', sans-serif",
+    color: C.text, display: "flex", flexDirection: "column",
     backgroundImage: "radial-gradient(ellipse at 20% 0%, rgba(200,120,32,0.06) 0%, transparent 60%), radial-gradient(ellipse at 80% 100%, rgba(200,120,32,0.04) 0%, transparent 60%)",
   },
   nav: {
@@ -660,9 +627,8 @@ const S = {
     color: C.amber, marginBottom: "28px",
   },
   heroTitle: {
-    fontSize: "clamp(36px,7vw,64px)", fontWeight: "700",
-    fontFamily: "'Playfair Display', serif", color: C.text,
-    margin: "0 0 18px 0", lineHeight: "1.1", letterSpacing: "-1.5px",
+    fontSize: "clamp(36px,7vw,64px)", fontWeight: "700", fontFamily: "'Playfair Display', serif",
+    color: C.text, margin: "0 0 18px 0", lineHeight: "1.1", letterSpacing: "-1.5px",
   },
   heroEmphasis: { fontStyle: "italic", color: C.amber },
   heroSub: {
@@ -695,7 +661,7 @@ const S = {
   optionsGrid: { display: "flex", flexDirection: "column", gap: "20px" },
   optBlock: { display: "flex", flexDirection: "column", gap: "8px" },
   optLabel: { fontSize: "10px", fontFamily: "'IBM Plex Mono', monospace", letterSpacing: "2px", color: C.muted },
-  optHint: { color: C.border, letterSpacing: "1px" },
+  optHint: { color: C.border },
   segGroup: { display: "flex", gap: "6px", flexWrap: "wrap" },
   seg: {
     background: C.bgMuted, border: `1.5px solid ${C.border}`, color: C.textSub,
@@ -808,21 +774,20 @@ const S = {
 const CSS = `
   * { box-sizing: border-box; }
   body { margin: 0; background: ${C.bg}; }
-
   *:focus-visible { outline: 2px solid ${C.amber}; outline-offset: 2px; border-radius: 4px; }
 
-  .nav-link:hover       { color: ${C.amber} !important; }
-  .seg:hover            { border-color: ${C.amber} !important; color: ${C.amber} !important; background: ${C.amberLight} !important; }
-  .seg-on               { pointer-events: none; }
-  .show-pass-btn:hover  { border-color: ${C.amber} !important; color: ${C.amber} !important; }
+  .nav-link:hover      { color: ${C.amber} !important; }
+  .seg:hover           { border-color: ${C.amber} !important; color: ${C.amber} !important; background: ${C.amberLight} !important; }
+  .seg-on              { pointer-events: none; }
+  .show-pass-btn:hover { border-color: ${C.amber} !important; color: ${C.amber} !important; }
   .primary-btn:not(:disabled):hover { background: ${C.amberHover} !important; transform: translateY(-1px); box-shadow: 0 6px 20px rgba(200,120,32,0.25); }
   .burn-btn:not(:disabled):hover    { background: ${C.amberLight} !important; }
-  .amber-btn:hover      { border-color: ${C.amber} !important; background: #fef0d0 !important; }
-  .ghost-btn:hover      { border-color: ${C.amber} !important; color: ${C.amber} !important; }
+  .amber-btn:hover  { border-color: ${C.amber} !important; background: #fef0d0 !important; }
+  .ghost-btn:hover  { border-color: ${C.amber} !important; color: ${C.amber} !important; }
 
-  .note-textarea:focus  { border-color: ${C.amber} !important; box-shadow: 0 0 0 3px rgba(200,120,32,0.12) !important; }
+  .note-textarea:focus { border-color: ${C.amber} !important; box-shadow: 0 0 0 3px rgba(200,120,32,0.12) !important; }
   .note-textarea::placeholder { color: ${C.border}; }
-  .pass-input:focus     { border-color: ${C.amber} !important; box-shadow: 0 0 0 3px rgba(200,120,32,0.12) !important; }
+  .pass-input:focus { border-color: ${C.amber} !important; box-shadow: 0 0 0 3px rgba(200,120,32,0.12) !important; }
   .pass-input::placeholder { color: ${C.border}; }
 
   .spin     { animation: spin 0.8s linear infinite; }

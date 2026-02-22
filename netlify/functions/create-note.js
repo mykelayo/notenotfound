@@ -3,10 +3,10 @@
 "use strict";
 const crypto = require("crypto");
 
-// ─── Secrets ────────────────────────────────────────────────────────────────
-const ENCRYPTION_KEY = process.env.ENCRYPTION_KEY;
-const UPSTASH_URL    = process.env.UPSTASH_REDIS_REST_URL;
-const UPSTASH_TOKEN  = process.env.UPSTASH_REDIS_REST_TOKEN;
+// .trim() prevents trailing newline bugs from copy-pasting env vars
+const ENCRYPTION_KEY = (process.env.ENCRYPTION_KEY || "").trim();
+const UPSTASH_URL    = (process.env.UPSTASH_REDIS_REST_URL || "").trim();
+const UPSTASH_TOKEN  = (process.env.UPSTASH_REDIS_REST_TOKEN || "").trim();
 
 const CORS = {
   "Access-Control-Allow-Origin":  "*",
@@ -15,52 +15,71 @@ const CORS = {
   "Content-Type":                 "application/json",
 };
 
-// AES-256-GCM: authenticated encryption
-// Returns "ivHex:tagHex:dataHex"
+// Derive a stable 32-byte key from the ENCRYPTION_KEY string
+// SHA-256 is deterministic, instant, and has no CPU timeout risk
+// MUST match the derivation in read-note.js exactly
+function deriveKey() {
+  return crypto.createHash("sha256").update(ENCRYPTION_KEY).digest();
+}
+
+// AES-256-GCM authenticated encryption
+// Returns "ivHex:authTagHex:encryptedHex" — all lowercase hex, joined by ":"
 function encrypt(plaintext) {
-  const iv     = crypto.randomBytes(12);
-  const key    = crypto.scryptSync(ENCRYPTION_KEY, "onetimote-v1-salt", 32);
+  const key    = deriveKey();
+  const iv     = crypto.randomBytes(12);              // 96-bit IV for GCM
   const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
   const enc    = Buffer.concat([cipher.update(plaintext, "utf8"), cipher.final()]);
-  const tag    = cipher.getAuthTag();
+  const tag    = cipher.getAuthTag();                 // 128-bit auth tag
   return [iv, tag, enc].map((b) => b.toString("hex")).join(":");
 }
 
-function hashPassword(pw) {
-  return crypto.createHash("sha256").update(pw + "onetimote-pw-v1").digest("hex");
+// SHA-256 password hash — raw password never stored
+// MUST match the hash in read-note.js exactly
+function hashPassword(password) {
+  return crypto.createHash("sha256").update("onetimote:" + password).digest("hex");
 }
 
+// Store a key → value in Upstash Redis with TTL
 async function redisSet(key, value, ttlSeconds) {
-  const url = `${UPSTASH_URL}/set/${encodeURIComponent(key)}`;
-  const res = await fetch(url, {
+  const res = await fetch(`${UPSTASH_URL}/set/${encodeURIComponent(key)}`, {
     method:  "POST",
     headers: {
       Authorization:  `Bearer ${UPSTASH_TOKEN}`,
       "Content-Type": "application/json",
     },
+    // Upstash REST format: [value, option, optionValue]
     body: JSON.stringify([value, "EX", String(ttlSeconds)]),
   });
   if (!res.ok) {
-    const body = await res.text().catch(() => "unknown");
-    throw new Error(`Upstash error ${res.status}: ${body}`);
+    const text = await res.text().catch(() => "(no body)");
+    throw new Error(`Upstash SET failed (HTTP ${res.status}): ${text}`);
   }
-  return res.json();
+  const json = await res.json();
+  if (json.error) throw new Error(`Upstash SET error: ${json.error}`);
+  return json;
 }
 
+// ── Main handler ──────────────────────────────────────────────────────────────
 exports.handler = async function (event) {
-  // Preflight
   if (event.httpMethod === "OPTIONS") {
     return { statusCode: 204, headers: CORS, body: "" };
   }
-
   if (event.httpMethod !== "POST") {
     return { statusCode: 405, headers: CORS, body: JSON.stringify({ error: "Method not allowed." }) };
   }
 
-  // Guard: environment variables must be configured in Netlify dashboard
+  // Fail clearly if env vars are missing
   if (!ENCRYPTION_KEY || !UPSTASH_URL || !UPSTASH_TOKEN) {
-    console.error("[create-note] FATAL: Missing env vars. Set ENCRYPTION_KEY, UPSTASH_REDIS_REST_URL, UPSTASH_REDIS_REST_TOKEN in Netlify dashboard.");
-    return { statusCode: 500, headers: CORS, body: JSON.stringify({ error: "Server not configured. Contact the site owner." }) };
+    console.error("[create-note] FATAL: One or more env vars missing.", {
+      hasKey:   !!ENCRYPTION_KEY,
+      hasURL:   !!UPSTASH_URL,
+      hasToken: !!UPSTASH_TOKEN,
+    });
+    return {
+      statusCode: 500,
+      headers: CORS,
+      body: JSON.stringify({ error: "Server not configured. Set env vars in Netlify dashboard." }),
+    };
   }
 
   // Parse body
@@ -68,45 +87,50 @@ exports.handler = async function (event) {
   try {
     body = JSON.parse(event.body || "{}");
   } catch {
-    return { statusCode: 400, headers: CORS, body: JSON.stringify({ error: "Request body must be valid JSON." }) };
+    return { statusCode: 400, headers: CORS, body: JSON.stringify({ error: "Invalid JSON body." }) };
   }
 
   const { content, password, expirySeconds } = body;
 
-  // Validate content
-  if (typeof content !== "string" || content.trim().length === 0) {
+  // Validate
+  if (typeof content !== "string" || !content.trim()) {
     return { statusCode: 400, headers: CORS, body: JSON.stringify({ error: "Note content is required." }) };
   }
   if (content.length > 10000) {
     return { statusCode: 400, headers: CORS, body: JSON.stringify({ error: "Note exceeds 10,000 character limit." }) };
   }
 
-  // Validate expiry — only exact values accepted
-  const VALID_TTLS = [3600, 86400, 259200, 604800];
+  // Only accept specific TTL values — reject anything else
+  const VALID_TTLS = [3600, 86400, 259200, 604800]; // 1h, 24h, 3d, 7d
   const ttl = VALID_TTLS.includes(Number(expirySeconds)) ? Number(expirySeconds) : 86400;
 
-  // Build and save note
-  const id           = crypto.randomBytes(16).toString("hex");
+  // Build note
+  const id           = crypto.randomBytes(16).toString("hex"); // 32-char unique ID
   const encContent   = encrypt(content.trim());
-  const passwordHash = (password && typeof password === "string" && password.trim())
-    ? hashPassword(password.trim())
-    : null;
+  const passwordHash =
+    password && typeof password === "string" && password.trim()
+      ? hashPassword(password.trim())
+      : null;
 
   const noteJson = JSON.stringify({
-    content:      encContent,
-    passwordHash: passwordHash,
+    content:      encContent,      // "ivHex:tagHex:dataHex"
+    passwordHash: passwordHash,    // SHA-256 hash or null
     createdAt:    Date.now(),
     expiresAt:    Date.now() + ttl * 1000,
   });
 
+  // Save to Redis
   try {
     await redisSet(`note:${id}`, noteJson, ttl);
+    console.log(`[create-note] Stored note ${id} TTL=${ttl}s hasPassword=${!!passwordHash}`);
   } catch (err) {
     console.error("[create-note] Redis error:", err.message);
-    return { statusCode: 500, headers: CORS, body: JSON.stringify({ error: "Failed to save note. Please try again." }) };
+    return {
+      statusCode: 500,
+      headers: CORS,
+      body: JSON.stringify({ error: "Failed to save note. Check Netlify function logs." }),
+    };
   }
-
-  console.log(`[create-note] Created note ${id} TTL=${ttl}s hasPassword=${!!passwordHash}`);
 
   return {
     statusCode: 201,
