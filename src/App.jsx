@@ -20,7 +20,6 @@ function getNoteIdFromURL() {
 }
 
 function getShareableLink(id) {
-  // Uses window.location.origin — works on localhost AND production automatically
   return `${window.location.origin}/note/${id}`;
 }
 
@@ -39,41 +38,68 @@ function timeAgo(ts) {
   return `${hours}h ago`;
 }
 
-// Analytics helper — fires events when Google Analytics is active
-// Safe to call even when GA is not loaded (window.gtag may be undefined)
-function track(eventName, params = {}) {
-  if (typeof window.gtag === "function") {
-    window.gtag("event", eventName, params);
-  }
+function track(name, params = {}) {
+  if (typeof window.gtag === "function") window.gtag("event", name, params);
 }
 
-// ── API (all relative paths — no hardcoded URLs) ──────────────────────────────
+// ── Safe fetch, always checks Content-Type before calling .json()
+async function safeFetch(url, options) {
+  let res;
+  try {
+    res = await fetch(url, options);
+  } catch (networkErr) {
+    throw new Error("Network error! Are you connected to the internet?");
+  }
+
+  const contentType = res.headers.get("content-type") || "";
+  if (!contentType.includes("application/json")) {
+    // Got HTML or something else
+    if (res.status === 404) {
+      throw new Error(
+        "API not reachable. If running locally, use `netlify dev`. not `npm run dev`."
+      );
+    }
+    throw new Error(`Server error (${res.status}). Try again or check Netlify function logs.`);
+  }
+
+  const data = await res.json();
+  return { data, status: res.status, ok: res.ok };
+}
+
+// ── API calls (all relative paths) ───────────────────────────────────────────
 
 async function apiCreateNote(content, password, expirySeconds) {
-  const res = await fetch("/api/create-note", {
+  const { data, ok } = await safeFetch("/api/create-note", {
     method:  "POST",
     headers: { "Content-Type": "application/json" },
-    body:    JSON.stringify({
-      content,
-      password:      password || null,
-      expirySeconds: expirySeconds,
-    }),
+    body:    JSON.stringify({ content, password: password || null, expirySeconds }),
   });
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.error || "Failed to create note.");
+  if (!ok) throw new Error(data.error || "Failed to create note.");
   return data; // { id, expiresAt }
 }
 
-async function apiReadNote(id, password, confirm) {
-  const body = { id, confirm };
+async function apiCheckNote(id, password) {
+  // Step 1: confirm = false — get metadata, note NOT destroyed
+  const body = { id, confirm: false };
   if (password) body.password = password;
-  const res = await fetch("/api/read-note", {
+  const { data, status } = await safeFetch("/api/read-note", {
     method:  "POST",
     headers: { "Content-Type": "application/json" },
     body:    JSON.stringify(body),
   });
-  const data = await res.json();
-  return { ...data, _status: res.status };
+  return { ...data, _status: status };
+}
+
+async function apiDestroyNote(id, password) {
+  // Step 2: confirm = true — GETDEL: atomically read content + delete note
+  const body = { id, confirm: true };
+  if (password) body.password = password;
+  const { data, status, ok } = await safeFetch("/api/read-note", {
+    method:  "POST",
+    headers: { "Content-Type": "application/json" },
+    body:    JSON.stringify(body),
+  });
+  return { ...data, _status: status, _ok: ok };
 }
 
 // ── Create View ───────────────────────────────────────────────────────────────
@@ -117,12 +143,8 @@ function CreateView() {
   }
 
   function reset() {
-    setResult(null);
-    setContent("");
-    setPassword("");
-    setExpiry(86400);
-    setError(null);
-    setCopied(false);
+    setResult(null); setContent(""); setPassword("");
+    setExpiry(86400); setError(null); setCopied(false);
   }
 
   // ── Success ────────────────────────────────────────────────────────────────
@@ -134,7 +156,8 @@ function CreateView() {
           <div>
             <h2 style={S.cardTitle}>Note created.</h2>
             <p style={S.cardSub}>
-              Expires in <strong style={{ color: C.amber }}>{formatExpiry(expiry)}</strong> or after one read — whichever comes first.
+              Expires in <strong style={{ color: C.amber }}>{formatExpiry(expiry)}</strong>{" "}
+              or after one read — whichever comes first.
             </p>
           </div>
         </div>
@@ -159,9 +182,7 @@ function CreateView() {
           </div>
         )}
 
-        <button style={S.ghostBtn} onClick={reset} className="ghost-btn" aria-label="Create another note">
-          ← Write another note
-        </button>
+        <button style={S.ghostBtn} onClick={reset} className="ghost-btn">← Write another note</button>
       </div>
     );
   }
@@ -183,9 +204,8 @@ function CreateView() {
           rows={7}
           className="note-textarea"
           aria-label="Note content"
-          aria-describedby="char-count"
         />
-        <div style={S.charRow} id="char-count">
+        <div style={S.charRow}>
           {overLimit && <span style={S.charErr} role="alert">Over limit — trim your note</span>}
           {nearLimit && !overLimit && <span style={S.charWarn}>{(MAX_CHARS - chars).toLocaleString()} characters left</span>}
           {!nearLimit && !overLimit && <span />}
@@ -196,7 +216,6 @@ function CreateView() {
       </div>
 
       <div style={S.optionsGrid}>
-        {/* Expiry */}
         <div style={S.optBlock}>
           <label style={S.optLabel}>EXPIRES IN</label>
           <div style={S.segGroup} role="group" aria-label="Expiry time">
@@ -214,11 +233,8 @@ function CreateView() {
           </div>
         </div>
 
-        {/* Password */}
         <div style={S.optBlock}>
-          <label style={S.optLabel}>
-            PASSWORD <span style={S.optHint}>— OPTIONAL</span>
-          </label>
+          <label style={S.optLabel}>PASSWORD <span style={S.optHint}>— OPTIONAL</span></label>
           <div style={S.passRow}>
             <input
               style={S.passInput}
@@ -229,12 +245,8 @@ function CreateView() {
               className="pass-input"
               aria-label="Optional password"
             />
-            <button
-              style={S.showPassBtn}
-              onClick={() => setShowPass((p) => !p)}
-              className="show-pass-btn"
-              aria-label={showPass ? "Hide password" : "Show password"}
-            >
+            <button style={S.showPassBtn} onClick={() => setShowPass((p) => !p)}
+              className="show-pass-btn" aria-label={showPass ? "Hide password" : "Show password"}>
               {showPass ? "Hide" : "Show"}
             </button>
           </div>
@@ -244,7 +256,7 @@ function CreateView() {
       {error && (
         <div style={S.errorBox} role="alert">
           <span style={S.errorIcon}>!</span>
-          {error}
+          <span>{error}</span>
         </div>
       )}
 
@@ -270,6 +282,7 @@ function CreateView() {
 // ── Read View ─────────────────────────────────────────────────────────────────
 
 function ReadView({ noteId }) {
+  // Phases: loading → (password?) → confirm → content | dead | error
   const [phase,    setPhase]    = useState("loading");
   const [meta,     setMeta]     = useState(null);
   const [password, setPassword] = useState("");
@@ -277,67 +290,95 @@ function ReadView({ noteId }) {
   const [content,  setContent]  = useState(null);
   const [copied,   setCopied]   = useState(false);
   const [loading,  setLoading]  = useState(false);
+  const [errMsg,   setErrMsg]   = useState(null);
 
+  // Step 1: check note exists on mount
   useEffect(() => {
     let cancelled = false;
-    async function check() {
+    async function checkNote() {
       try {
-        const data = await apiReadNote(noteId, null, false);
+        const data = await apiCheckNote(noteId, null);
         if (cancelled) return;
-        if (data._status === 404 || !data.exists) {
+        if (data._status === 404) {
           setPhase("dead");
           track("note_not_found");
-        } else if (data.passwordRequired) {
+        } else if (data._status === 401 || data.passwordRequired) {
           setPhase("password");
           track("note_password_required");
-        } else {
+        } else if (data._status === 200 && data.exists) {
           setMeta(data);
           setPhase("confirm");
           track("note_found");
+        } else {
+          // Unexpected — show error but don't declare dead since we didn't destroy anything
+          setErrMsg(data.error || "Unexpected response from server.");
+          setPhase("error");
         }
-      } catch {
-        if (!cancelled) setPhase("dead");
+      } catch (err) {
+        if (!cancelled) {
+          setErrMsg(err.message);
+          setPhase("error");
+        }
       }
     }
-    check();
+    checkNote();
     return () => { cancelled = true; };
   }, [noteId]);
 
+  // Password submit (still confirm: false — just verifying the password)
   async function handlePasswordSubmit() {
     if (!password.trim()) return;
     setLoading(true);
     setPassErr(false);
     try {
-      const data = await apiReadNote(noteId, password, false);
+      const data = await apiCheckNote(noteId, password);
       if (data._status === 401 || data._status === 403) {
         setPassErr(true);
         track("note_wrong_password");
-      } else if (data.exists) {
+      } else if (data._status === 200 && data.exists) {
         setMeta(data);
         setPhase("confirm");
-      } else {
+      } else if (data._status === 404) {
         setPhase("dead");
+      } else {
+        setErrMsg(data.error || "Unexpected server response.");
+        setPhase("error");
       }
-    } catch {
-      setPhase("dead");
+    } catch (err) {
+      setErrMsg(err.message);
+      setPhase("error");
     } finally {
       setLoading(false);
     }
   }
 
+  // Step 2: read + destroy (atomic GETDEL in backend)
   async function handleConfirm() {
     setLoading(true);
     try {
-      const data = await apiReadNote(noteId, password || null, true);
-      if (data.content) {
+      const data = await apiDestroyNote(noteId, password || null);
+
+      if (data._status === 200 && data.content !== undefined && data.content !== null) {
+        // ✓ Content returned successfully — note has been destroyed
         setContent(data.content);
         setPhase("content");
         track("note_read_and_destroyed");
-      } else {
+      } else if (data._status === 404) {
+        // Note was already gone before we could read it
         setPhase("dead");
+      } else {
+        // Something went wrong server-side — show the actual error message
+        // Note MAY or MAY NOT have been destroyed — be honest with the user
+        setErrMsg(data.error || "Something went wrong reading the note.");
+        setPhase("error");
+        track("note_read_error", { status: data._status });
       }
-    } catch {
-      setPhase("dead");
+    } catch (err) {
+      // Network error, we don't know if the note was destroyed or not
+      setErrMsg(
+        err.message + " , If you see this repeatedly, the note may have been consumed. Check the link again."
+      );
+      setPhase("error");
     } finally {
       setLoading(false);
     }
@@ -351,20 +392,39 @@ function ReadView({ noteId }) {
     </div>
   );
 
-  // ── Dead ───────────────────────────────────────────────────────────────────
+  // ── Error (server/network) — distinct from "dead" ─────────────────────────
+  if (phase === "error") return (
+    <div style={{ ...S.card, alignItems: "center", textAlign: "center" }} className="fade-in">
+      <div style={S.phaseIcon}>⚠️</div>
+      <h2 style={S.cardTitle}>Something went wrong.</h2>
+      <p style={S.cardSub}>{errMsg}</p>
+      <button
+        style={S.ghostBtn}
+        onClick={() => { setErrMsg(null); setPhase("loading"); }}
+        className="ghost-btn"
+      >
+        Try again
+      </button>
+      <a href="/" style={{ ...S.ghostBtn, marginTop: "-8px" }} className="ghost-btn">
+        ← Create a new note
+      </a>
+    </div>
+  );
+
+  // ── Dead / not found ───────────────────────────────────────────────────────
   if (phase === "dead") return (
     <div style={{ ...S.card, textAlign: "center", alignItems: "center" }} className="fade-in">
       <div style={S.deadIcon}>𝕏</div>
       <h2 style={S.cardTitle}>This note no longer exists.</h2>
       <p style={S.cardSub}>
         It was already read, expired, or never created. One-time notes vanish
-        after a single view — forever, by design.
+        after a single view, forever, by design.
       </p>
       <a href="/" style={S.ghostBtn} className="ghost-btn">← Create a new note</a>
     </div>
   );
 
-  // ── Password ───────────────────────────────────────────────────────────────
+  // ── Password prompt ────────────────────────────────────────────────────────
   if (phase === "password") return (
     <div style={{ ...S.card, textAlign: "center", alignItems: "center" }} className="fade-in">
       <div style={S.phaseIcon}>🔒</div>
@@ -400,7 +460,7 @@ function ReadView({ noteId }) {
     </div>
   );
 
-  // ── Confirm ────────────────────────────────────────────────────────────────
+  // ── Confirm / burn ─────────────────────────────────────────────────────────
   if (phase === "confirm") return (
     <div style={{ ...S.card, textAlign: "center", alignItems: "center" }} className="fade-in">
       <div style={S.phaseIcon}>🔥</div>
@@ -408,7 +468,7 @@ function ReadView({ noteId }) {
       <p style={S.cardSub}>
         This is a <strong>one-time note</strong>. The moment you open it, it will be{" "}
         <strong style={{ color: C.amber }}>permanently deleted</strong> from our servers.
-        There is no undo and no recovery.
+        There is no undo.
       </p>
       {meta?.createdAt && (
         <div style={S.pillRow}>
@@ -433,7 +493,7 @@ function ReadView({ noteId }) {
     </div>
   );
 
-  // ── Content ────────────────────────────────────────────────────────────────
+  // ── Content — shown after successful GETDEL ────────────────────────────────
   if (phase === "content") return (
     <div style={S.card} className="fade-in">
       <div style={S.destroyedBadge}>✓ Note destroyed — this was its only view</div>
@@ -459,8 +519,8 @@ function ReadView({ noteId }) {
       <div style={S.warningBox}>
         <span style={S.warningIcon}>⚠</span>
         <span>
-          This note has been deleted from our servers. <strong>Save the content now</strong> —
-          refreshing this page will not bring it back.
+          This note is permanently gone from our servers.{" "}
+          <strong>Save the content now</strong> — refreshing this page will not bring it back.
         </span>
       </div>
 
@@ -471,7 +531,7 @@ function ReadView({ noteId }) {
   return null;
 }
 
-// ── GitHub Icon ───────────────────────────────────────────────────────────────
+// ── GitHub icon ───────────────────────────────────────────────────────────────
 
 function GithubIcon({ size = 15 }) {
   return (
@@ -487,18 +547,14 @@ function GithubIcon({ size = 15 }) {
 export default function App() {
   const noteId = getNoteIdFromURL();
 
-  // Track page view on mount
   useEffect(() => {
-    track("page_view", {
-      page: noteId ? "read_note" : "create_note",
-    });
+    track("page_view", { page: noteId ? "read_note" : "create_note" });
   }, []);
 
   return (
     <div style={S.root}>
       <style>{CSS}</style>
 
-      {/* ── Navigation ── */}
       <nav style={S.nav} role="navigation" aria-label="Main navigation">
         <a href="/" style={S.navLogo} aria-label="OneTimeNote home">
           <span style={S.navLogoGlyph} aria-hidden="true">◈</span>
@@ -512,35 +568,31 @@ export default function App() {
         </div>
       </nav>
 
-      {/* ── Main content ── */}
       <main style={S.main} role="main">
         {!noteId && (
           <div style={S.hero}>
-            <div style={S.heroBadge} aria-label="App status">
-              Free &amp; Open Source
-            </div>
+            <div style={S.heroBadge}>Free &amp; Open Source</div>
             <h1 style={S.heroTitle}>
               Share secrets.<br />
               <span style={S.heroEmphasis}>Leave no trace.</span>
             </h1>
             <p style={S.heroSub}>
               Write a private, encrypted note. Share the link. It self-destructs
-              the moment it's read, and we have no way to recover it.
+              the moment it's read — and we have no way to recover it.
             </p>
           </div>
         )}
         {noteId ? <ReadView noteId={noteId} /> : <CreateView />}
       </main>
 
-      {/* ── Footer ── */}
       <footer style={S.footer} role="contentinfo">
         <div style={S.footerInner}>
           <span style={S.footerBrand}>
-            <span style={{ color: C.amber }} aria-hidden="true">◈</span> OneTimeNote
+            <span style={{ color: C.amber }}>◈</span> OneTimeNote
           </span>
           <span style={S.footerMeta}>AES-256 · Zero logs · MIT License</span>
           <a href={GITHUB} target="_blank" rel="noreferrer"
-            style={S.footerLink} className="nav-link" aria-label="GitHub: mykelayo">
+            style={S.footerLink} className="nav-link">
             <GithubIcon />mykelayo
           </a>
         </div>
@@ -552,25 +604,22 @@ export default function App() {
 // ── Design tokens ─────────────────────────────────────────────────────────────
 
 const C = {
-  bg:         "#faf5ee",   // warm parchment
-  bgCard:     "#ffffff",   // pure white cards
-  bgInput:    "#fdf8f2",   // slightly warm input background
-  bgMuted:    "#f5ede0",   // muted warm section bg
-  border:     "#e8d5b8",   // warm tan border
-  borderFocus:"#c87820",   // amber on focus
-  text:       "#1a0f00",   // very dark brown, almost black
-  textSub:    "#6b4c2a",   // warm medium brown
-  muted:      "#a07850",   // muted text
-  amber:      "#c87820",   // primary amber
-  amberHover: "#a86010",   // darker amber hover
-  amberLight: "#fef4e0",   // amber tint for backgrounds
-  green:      "#2d7a4a",   // success green
-  greenLight: "#edf7f1",   // success tint
-  red:        "#b83225",   // error red
-  redLight:   "#fdf0ee",   // error tint
+  bg:         "#faf5ee",
+  bgCard:     "#ffffff",
+  bgInput:    "#fdf8f2",
+  bgMuted:    "#f5ede0",
+  border:     "#e8d5b8",
+  text:       "#1a0f00",
+  textSub:    "#6b4c2a",
+  muted:      "#a07850",
+  amber:      "#c87820",
+  amberHover: "#a86010",
+  amberLight: "#fef4e0",
+  green:      "#2d7a4a",
+  greenLight: "#edf7f1",
+  red:        "#b83225",
+  redLight:   "#fdf0ee",
 };
-
-// ── Styles ────────────────────────────────────────────────────────────────────
 
 const S = {
   root: {
@@ -582,480 +631,200 @@ const S = {
     flexDirection: "column",
     backgroundImage: "radial-gradient(ellipse at 20% 0%, rgba(200,120,32,0.06) 0%, transparent 60%), radial-gradient(ellipse at 80% 100%, rgba(200,120,32,0.04) 0%, transparent 60%)",
   },
-
-  // Navigation
   nav: {
-    display: "flex",
-    justifyContent: "space-between",
-    alignItems: "center",
-    padding: "0 32px",
-    height: "60px",
-    borderBottom: `1px solid ${C.border}`,
-    background: "rgba(250,245,238,0.95)",
-    backdropFilter: "blur(8px)",
-    position: "sticky",
-    top: 0,
-    zIndex: 100,
+    display: "flex", justifyContent: "space-between", alignItems: "center",
+    padding: "0 32px", height: "60px", borderBottom: `1px solid ${C.border}`,
+    background: "rgba(250,245,238,0.96)", backdropFilter: "blur(8px)",
+    position: "sticky", top: 0, zIndex: 100,
   },
   navLogo: {
-    display: "flex",
-    alignItems: "center",
-    gap: "8px",
-    fontSize: "17px",
-    fontWeight: "700",
-    color: C.text,
-    textDecoration: "none",
-    letterSpacing: "-0.3px",
+    display: "flex", alignItems: "center", gap: "8px", fontSize: "17px",
+    fontWeight: "700", color: C.text, textDecoration: "none",
     fontFamily: "'Playfair Display', serif",
   },
   navLogoGlyph: { color: C.amber, fontSize: "18px" },
   navRight: { display: "flex", alignItems: "center", gap: "24px" },
   navLink: {
-    display: "flex",
-    alignItems: "center",
-    color: C.muted,
-    textDecoration: "none",
-    fontSize: "13px",
-    fontFamily: "'IBM Plex Mono', monospace",
-    transition: "color 0.15s",
+    display: "flex", alignItems: "center", color: C.muted, textDecoration: "none",
+    fontSize: "13px", fontFamily: "'IBM Plex Mono', monospace", transition: "color 0.15s",
   },
-
-  // Main layout
   main: {
-    flex: 1,
-    display: "flex",
-    flexDirection: "column",
-    alignItems: "center",
-    justifyContent: "center",
-    padding: "48px 20px",
-    gap: "40px",
+    flex: 1, display: "flex", flexDirection: "column", alignItems: "center",
+    justifyContent: "center", padding: "48px 20px", gap: "40px",
   },
-
-  // Hero
   hero: { textAlign: "center", maxWidth: "540px" },
   heroBadge: {
-    display: "inline-block",
-    background: C.amberLight,
-    border: `1px solid ${C.border}`,
-    borderRadius: "20px",
-    padding: "5px 16px",
-    fontSize: "11px",
-    fontFamily: "'IBM Plex Mono', monospace",
-    letterSpacing: "2px",
-    color: C.amber,
-    marginBottom: "28px",
+    display: "inline-block", background: C.amberLight, border: `1px solid ${C.border}`,
+    borderRadius: "20px", padding: "5px 16px", fontSize: "11px",
+    fontFamily: "'IBM Plex Mono', monospace", letterSpacing: "2px",
+    color: C.amber, marginBottom: "28px",
   },
   heroTitle: {
-    fontSize: "clamp(36px,7vw,64px)",
-    fontWeight: "700",
-    fontFamily: "'Playfair Display', serif",
-    color: C.text,
-    margin: "0 0 18px 0",
-    lineHeight: "1.1",
-    letterSpacing: "-1.5px",
+    fontSize: "clamp(36px,7vw,64px)", fontWeight: "700",
+    fontFamily: "'Playfair Display', serif", color: C.text,
+    margin: "0 0 18px 0", lineHeight: "1.1", letterSpacing: "-1.5px",
   },
   heroEmphasis: { fontStyle: "italic", color: C.amber },
   heroSub: {
-    fontSize: "16px",
-    color: C.textSub,
-    lineHeight: "1.8",
-    margin: 0,
-    maxWidth: "420px",
-    marginLeft: "auto",
-    marginRight: "auto",
+    fontSize: "16px", color: C.textSub, lineHeight: "1.8", margin: 0,
+    maxWidth: "420px", marginLeft: "auto", marginRight: "auto",
   },
-
-  // Card
   card: {
-    background: C.bgCard,
-    border: `1px solid ${C.border}`,
-    borderRadius: "16px",
-    padding: "clamp(24px,4vw,40px)",
-    width: "100%",
-    maxWidth: "580px",
-    display: "flex",
-    flexDirection: "column",
-    gap: "24px",
+    background: C.bgCard, border: `1px solid ${C.border}`, borderRadius: "16px",
+    padding: "clamp(24px,4vw,40px)", width: "100%", maxWidth: "580px",
+    display: "flex", flexDirection: "column", gap: "24px",
     boxShadow: "0 2px 8px rgba(26,15,0,0.06), 0 20px 48px rgba(26,15,0,0.08)",
   },
   cardTitle: {
-    fontSize: "22px",
-    fontWeight: "700",
-    fontFamily: "'Playfair Display', serif",
-    color: C.text,
-    margin: 0,
-    letterSpacing: "-0.3px",
+    fontSize: "22px", fontWeight: "700", fontFamily: "'Playfair Display', serif",
+    color: C.text, margin: 0,
   },
   cardSub: { fontSize: "14px", color: C.textSub, lineHeight: "1.7", margin: 0 },
-
-  // Form
   fieldGroup: { display: "flex", flexDirection: "column", gap: "6px" },
   textarea: {
-    background: C.bgInput,
-    border: `1.5px solid ${C.border}`,
-    borderRadius: "10px",
-    padding: "16px",
-    color: C.text,
-    fontSize: "15px",
-    fontFamily: "'DM Sans', sans-serif",
-    lineHeight: "1.7",
-    resize: "vertical",
-    outline: "none",
-    transition: "border-color 0.2s, box-shadow 0.2s",
-    width: "100%",
-    boxSizing: "border-box",
-    minHeight: "160px",
+    background: C.bgInput, border: `1.5px solid ${C.border}`, borderRadius: "10px",
+    padding: "16px", color: C.text, fontSize: "15px", fontFamily: "'DM Sans', sans-serif",
+    lineHeight: "1.7", resize: "vertical", outline: "none",
+    transition: "border-color 0.2s, box-shadow 0.2s", width: "100%", boxSizing: "border-box", minHeight: "160px",
   },
   textareaErr: { borderColor: C.red, background: C.redLight },
   charRow: { display: "flex", justifyContent: "space-between", alignItems: "center" },
   charNum: { fontSize: "12px", fontFamily: "'IBM Plex Mono', monospace", transition: "color 0.2s" },
   charErr: { fontSize: "12px", color: C.red, fontWeight: "500" },
   charWarn: { fontSize: "12px", color: C.amber, fontWeight: "500" },
-
-  // Options
   optionsGrid: { display: "flex", flexDirection: "column", gap: "20px" },
   optBlock: { display: "flex", flexDirection: "column", gap: "8px" },
-  optLabel: {
-    fontSize: "10px",
-    fontFamily: "'IBM Plex Mono', monospace",
-    letterSpacing: "2px",
-    color: C.muted,
-    fontWeight: "500",
-  },
+  optLabel: { fontSize: "10px", fontFamily: "'IBM Plex Mono', monospace", letterSpacing: "2px", color: C.muted },
   optHint: { color: C.border, letterSpacing: "1px" },
   segGroup: { display: "flex", gap: "6px", flexWrap: "wrap" },
   seg: {
-    background: C.bgMuted,
-    border: `1.5px solid ${C.border}`,
-    color: C.textSub,
-    fontFamily: "'IBM Plex Mono', monospace",
-    fontSize: "12px",
-    padding: "7px 14px",
-    cursor: "pointer",
-    borderRadius: "8px",
-    transition: "all 0.15s",
-    fontWeight: "400",
+    background: C.bgMuted, border: `1.5px solid ${C.border}`, color: C.textSub,
+    fontFamily: "'IBM Plex Mono', monospace", fontSize: "12px", padding: "7px 14px",
+    cursor: "pointer", borderRadius: "8px", transition: "all 0.15s",
   },
-  segOn: {
-    background: C.amberLight,
-    border: `1.5px solid ${C.amber}`,
-    color: C.amber,
-    fontWeight: "500",
-  },
-
+  segOn: { background: C.amberLight, border: `1.5px solid ${C.amber}`, color: C.amber, fontWeight: "500" },
   passRow: { display: "flex", gap: "8px" },
   passInput: {
-    flex: 1,
-    background: C.bgInput,
-    border: `1.5px solid ${C.border}`,
-    borderRadius: "10px",
-    padding: "10px 14px",
-    color: C.text,
-    fontSize: "14px",
-    fontFamily: "'DM Sans', sans-serif",
-    outline: "none",
-    transition: "border-color 0.2s",
-    boxSizing: "border-box",
+    flex: 1, background: C.bgInput, border: `1.5px solid ${C.border}`, borderRadius: "10px",
+    padding: "10px 14px", color: C.text, fontSize: "14px", fontFamily: "'DM Sans', sans-serif",
+    outline: "none", transition: "border-color 0.2s", boxSizing: "border-box",
   },
   passInputErr: { borderColor: C.red, background: C.redLight },
   showPassBtn: {
-    background: C.bgMuted,
-    border: `1.5px solid ${C.border}`,
-    color: C.textSub,
-    fontFamily: "'IBM Plex Mono', monospace",
-    fontSize: "10px",
-    letterSpacing: "1px",
-    padding: "10px 14px",
-    cursor: "pointer",
-    borderRadius: "8px",
-    flexShrink: 0,
-    transition: "all 0.15s",
+    background: C.bgMuted, border: `1.5px solid ${C.border}`, color: C.textSub,
+    fontFamily: "'IBM Plex Mono', monospace", fontSize: "10px", letterSpacing: "1px",
+    padding: "10px 14px", cursor: "pointer", borderRadius: "8px", flexShrink: 0, transition: "all 0.15s",
   },
-
-  // Buttons
   primaryBtn: {
-    background: C.amber,
-    color: "#fff",
-    border: "none",
-    padding: "14px 24px",
-    fontSize: "15px",
-    fontFamily: "'DM Sans', sans-serif",
-    fontWeight: "600",
-    cursor: "pointer",
-    borderRadius: "10px",
-    transition: "all 0.2s",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: "8px",
-    letterSpacing: "-0.2px",
+    background: C.amber, color: "#fff", border: "none", padding: "14px 24px",
+    fontSize: "15px", fontFamily: "'DM Sans', sans-serif", fontWeight: "600",
+    cursor: "pointer", borderRadius: "10px", transition: "all 0.2s",
+    display: "flex", alignItems: "center", justifyContent: "center", gap: "8px",
   },
-  primaryBtnOff: {
-    background: C.border,
-    color: C.muted,
-    cursor: "not-allowed",
-  },
+  primaryBtnOff: { background: C.border, color: C.muted, cursor: "not-allowed" },
   burnBtn: {
-    background: "transparent",
-    color: C.amber,
-    border: `2px solid ${C.amber}`,
-    padding: "14px 24px",
-    fontSize: "15px",
-    fontFamily: "'DM Sans', sans-serif",
-    fontWeight: "600",
-    cursor: "pointer",
-    borderRadius: "10px",
-    transition: "all 0.2s",
-    letterSpacing: "-0.2px",
+    background: "transparent", color: C.amber, border: `2px solid ${C.amber}`,
+    padding: "14px 24px", fontSize: "15px", fontFamily: "'DM Sans', sans-serif",
+    fontWeight: "600", cursor: "pointer", borderRadius: "10px", transition: "all 0.2s",
   },
   amberBtn: {
-    background: C.amberLight,
-    border: `1.5px solid ${C.border}`,
-    color: C.amber,
-    fontFamily: "'IBM Plex Mono', monospace",
-    fontSize: "12px",
-    letterSpacing: "0.5px",
-    padding: "9px 18px",
-    cursor: "pointer",
-    borderRadius: "8px",
-    transition: "all 0.2s",
-    fontWeight: "500",
+    background: C.amberLight, border: `1.5px solid ${C.border}`, color: C.amber,
+    fontFamily: "'IBM Plex Mono', monospace", fontSize: "12px", padding: "9px 18px",
+    cursor: "pointer", borderRadius: "8px", transition: "all 0.2s", fontWeight: "500",
   },
   amberBtnDone: { background: C.greenLight, borderColor: C.green, color: C.green },
   ghostBtn: {
-    background: "transparent",
-    border: `1.5px solid ${C.border}`,
-    color: C.muted,
-    fontFamily: "'IBM Plex Mono', monospace",
-    fontSize: "12px",
-    letterSpacing: "0.5px",
-    padding: "10px 18px",
-    cursor: "pointer",
-    borderRadius: "8px",
-    textDecoration: "none",
-    textAlign: "center",
-    transition: "all 0.2s",
-    display: "inline-block",
+    background: "transparent", border: `1.5px solid ${C.border}`, color: C.muted,
+    fontFamily: "'IBM Plex Mono', monospace", fontSize: "12px", padding: "10px 18px",
+    cursor: "pointer", borderRadius: "8px", textDecoration: "none",
+    textAlign: "center", transition: "all 0.2s", display: "inline-block",
   },
   btnSpinner: {
-    display: "inline-block",
-    width: "14px",
-    height: "14px",
-    border: "2px solid rgba(255,255,255,0.3)",
-    borderTop: "2px solid #fff",
-    borderRadius: "50%",
+    display: "inline-block", width: "14px", height: "14px",
+    border: "2px solid rgba(255,255,255,0.3)", borderTop: "2px solid #fff", borderRadius: "50%",
   },
-
-  // Alerts
   errorBox: {
-    background: C.redLight,
-    border: `1px solid #f0c0bb`,
-    borderLeft: `3px solid ${C.red}`,
-    borderRadius: "8px",
-    padding: "12px 16px",
-    color: C.red,
-    fontSize: "13px",
-    display: "flex",
-    gap: "10px",
-    alignItems: "center",
-    fontWeight: "500",
+    background: C.redLight, border: `1px solid #f0c0bb`, borderLeft: `3px solid ${C.red}`,
+    borderRadius: "8px", padding: "12px 16px", color: C.red, fontSize: "13px",
+    display: "flex", gap: "10px", alignItems: "center", fontWeight: "500",
   },
   errorIcon: {
-    border: `1.5px solid ${C.red}`,
-    borderRadius: "50%",
-    width: "18px",
-    height: "18px",
-    textAlign: "center",
-    lineHeight: "17px",
-    fontSize: "11px",
-    flexShrink: 0,
-    fontWeight: "700",
+    border: `1.5px solid ${C.red}`, borderRadius: "50%", width: "18px", height: "18px",
+    textAlign: "center", lineHeight: "17px", fontSize: "11px", flexShrink: 0, fontWeight: "700",
   },
   warningBox: {
-    background: C.amberLight,
-    border: `1px solid #f0d890`,
-    borderLeft: `3px solid ${C.amber}`,
-    borderRadius: "8px",
-    padding: "12px 16px",
-    fontSize: "13px",
-    color: C.textSub,
-    display: "flex",
-    gap: "10px",
-    alignItems: "flex-start",
-    lineHeight: "1.6",
+    background: C.amberLight, border: `1px solid #f0d890`, borderLeft: `3px solid ${C.amber}`,
+    borderRadius: "8px", padding: "12px 16px", fontSize: "13px", color: C.textSub,
+    display: "flex", gap: "10px", alignItems: "flex-start", lineHeight: "1.6",
   },
   warningIcon: { fontSize: "16px", flexShrink: 0 },
   disclaimer: {
-    fontSize: "12px",
-    color: C.muted,
-    lineHeight: "1.7",
-    margin: 0,
-    textAlign: "center",
-    fontFamily: "'IBM Plex Mono', monospace",
+    fontSize: "12px", color: C.muted, lineHeight: "1.7", margin: 0,
+    textAlign: "center", fontFamily: "'IBM Plex Mono', monospace",
   },
-
-  // Success / create result
   successTop: { display: "flex", alignItems: "flex-start", gap: "16px" },
   successRing: {
-    width: "44px",
-    height: "44px",
-    borderRadius: "50%",
-    border: `2px solid ${C.green}`,
-    background: C.greenLight,
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    flexShrink: 0,
+    width: "44px", height: "44px", borderRadius: "50%", border: `2px solid ${C.green}`,
+    background: C.greenLight, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0,
   },
   successCheck: { color: C.green, fontSize: "18px", fontWeight: "700" },
   linkCard: {
-    background: C.bgMuted,
-    border: `1.5px solid ${C.border}`,
-    borderRadius: "10px",
-    padding: "18px 20px",
-    display: "flex",
-    flexDirection: "column",
-    gap: "10px",
+    background: C.bgMuted, border: `1.5px solid ${C.border}`, borderRadius: "10px",
+    padding: "18px 20px", display: "flex", flexDirection: "column", gap: "10px",
   },
-  linkLabel: {
-    fontSize: "9px",
-    fontFamily: "'IBM Plex Mono', monospace",
-    letterSpacing: "3px",
-    color: C.muted,
-  },
-  linkValue: {
-    fontSize: "13px",
-    fontFamily: "'IBM Plex Mono', monospace",
-    color: C.text,
-    wordBreak: "break-all",
-    lineHeight: "1.5",
-  },
-
-  // Read states
-  loadRing: {
-    width: "32px",
-    height: "32px",
-    border: `2px solid ${C.border}`,
-    borderTop: `2px solid ${C.amber}`,
-    borderRadius: "50%",
-  },
-  deadIcon: {
-    fontSize: "44px",
-    textAlign: "center",
-    color: C.border,
-    fontFamily: "'Playfair Display', serif",
-  },
+  linkLabel: { fontSize: "9px", fontFamily: "'IBM Plex Mono', monospace", letterSpacing: "3px", color: C.muted },
+  linkValue: { fontSize: "13px", fontFamily: "'IBM Plex Mono', monospace", color: C.text, wordBreak: "break-all", lineHeight: "1.5" },
+  loadRing: { width: "32px", height: "32px", border: `2px solid ${C.border}`, borderTop: `2px solid ${C.amber}`, borderRadius: "50%" },
+  deadIcon: { fontSize: "44px", textAlign: "center", color: C.border, fontFamily: "'Playfair Display', serif" },
   phaseIcon: { fontSize: "44px", textAlign: "center" },
   pillRow: { display: "flex", justifyContent: "center", gap: "8px", flexWrap: "wrap" },
   pill: {
-    background: C.bgMuted,
-    border: `1px solid ${C.border}`,
-    borderRadius: "20px",
-    padding: "4px 12px",
-    fontSize: "12px",
-    fontFamily: "'IBM Plex Mono', monospace",
-    color: C.muted,
+    background: C.bgMuted, border: `1px solid ${C.border}`, borderRadius: "20px",
+    padding: "4px 12px", fontSize: "12px", fontFamily: "'IBM Plex Mono', monospace", color: C.muted,
   },
   destroyedBadge: {
-    background: C.greenLight,
-    border: `1px solid #b8dfc8`,
-    borderRadius: "8px",
-    padding: "10px 14px",
-    fontSize: "12px",
-    fontFamily: "'IBM Plex Mono', monospace",
-    color: C.green,
-    textAlign: "center",
-    fontWeight: "500",
+    background: C.greenLight, border: `1px solid #b8dfc8`, borderRadius: "8px",
+    padding: "10px 14px", fontSize: "12px", fontFamily: "'IBM Plex Mono', monospace",
+    color: C.green, textAlign: "center", fontWeight: "500",
   },
   contentBox: {
-    background: C.bgInput,
-    border: `1.5px solid ${C.border}`,
-    borderRadius: "10px",
-    padding: "20px",
-    maxHeight: "400px",
-    overflowY: "auto",
+    background: C.bgInput, border: `1.5px solid ${C.border}`, borderRadius: "10px",
+    padding: "20px", maxHeight: "400px", overflowY: "auto",
   },
   contentPre: {
-    margin: 0,
-    fontSize: "15px",
-    color: C.text,
-    lineHeight: "1.7",
-    whiteSpace: "pre-wrap",
-    wordBreak: "break-word",
-    fontFamily: "'DM Sans', sans-serif",
+    margin: 0, fontSize: "15px", color: C.text, lineHeight: "1.7",
+    whiteSpace: "pre-wrap", wordBreak: "break-word", fontFamily: "'DM Sans', sans-serif",
   },
-
-  // Footer
-  footer: {
-    padding: "20px 32px",
-    borderTop: `1px solid ${C.border}`,
-    background: C.bgMuted,
-  },
+  footer: { padding: "20px 32px", borderTop: `1px solid ${C.border}`, background: C.bgMuted },
   footerInner: {
-    display: "flex",
-    justifyContent: "space-between",
-    alignItems: "center",
-    flexWrap: "wrap",
-    gap: "12px",
-    maxWidth: "1000px",
-    margin: "0 auto",
+    display: "flex", justifyContent: "space-between", alignItems: "center",
+    flexWrap: "wrap", gap: "12px", maxWidth: "1000px", margin: "0 auto",
   },
-  footerBrand: {
-    fontSize: "14px",
-    fontWeight: "600",
-    color: C.textSub,
-    fontFamily: "'Playfair Display', serif",
-    display: "flex",
-    alignItems: "center",
-    gap: "6px",
-  },
-  footerMeta: {
-    fontSize: "11px",
-    fontFamily: "'IBM Plex Mono', monospace",
-    color: C.muted,
-  },
-  footerLink: {
-    display: "flex",
-    alignItems: "center",
-    color: C.muted,
-    textDecoration: "none",
-    fontSize: "12px",
-    fontFamily: "'IBM Plex Mono', monospace",
-    transition: "color 0.15s",
-  },
+  footerBrand: { fontSize: "14px", fontWeight: "600", color: C.textSub, fontFamily: "'Playfair Display', serif", display: "flex", alignItems: "center", gap: "6px" },
+  footerMeta: { fontSize: "11px", fontFamily: "'IBM Plex Mono', monospace", color: C.muted },
+  footerLink: { display: "flex", alignItems: "center", color: C.muted, textDecoration: "none", fontSize: "12px", fontFamily: "'IBM Plex Mono', monospace", transition: "color 0.15s" },
 };
-
-// ── CSS ───────────────────────────────────────────────────────────────────────
 
 const CSS = `
   * { box-sizing: border-box; }
   body { margin: 0; background: ${C.bg}; }
 
-  /* Focus styles — accessibility */
-  *:focus-visible {
-    outline: 2px solid ${C.amber};
-    outline-offset: 2px;
-    border-radius: 4px;
-  }
+  *:focus-visible { outline: 2px solid ${C.amber}; outline-offset: 2px; border-radius: 4px; }
 
-  /* Interactive states */
-  .nav-link:hover    { color: ${C.amber} !important; }
-  .seg:hover         { border-color: ${C.amber} !important; color: ${C.amber} !important; background: ${C.amberLight} !important; }
-  .seg-on            { pointer-events: none; }
-  .show-pass-btn:hover { border-color: ${C.amber} !important; color: ${C.amber} !important; }
+  .nav-link:hover       { color: ${C.amber} !important; }
+  .seg:hover            { border-color: ${C.amber} !important; color: ${C.amber} !important; background: ${C.amberLight} !important; }
+  .seg-on               { pointer-events: none; }
+  .show-pass-btn:hover  { border-color: ${C.amber} !important; color: ${C.amber} !important; }
+  .primary-btn:not(:disabled):hover { background: ${C.amberHover} !important; transform: translateY(-1px); box-shadow: 0 6px 20px rgba(200,120,32,0.25); }
+  .burn-btn:not(:disabled):hover    { background: ${C.amberLight} !important; }
+  .amber-btn:hover      { border-color: ${C.amber} !important; background: #fef0d0 !important; }
+  .ghost-btn:hover      { border-color: ${C.amber} !important; color: ${C.amber} !important; }
 
-  .primary-btn:not(:disabled):hover  { background: ${C.amberHover} !important; transform: translateY(-1px); box-shadow: 0 6px 20px rgba(200,120,32,0.25); }
-  .burn-btn:not(:disabled):hover     { background: ${C.amberLight} !important; }
-  .amber-btn:hover   { border-color: ${C.amber} !important; background: #fef0d0 !important; }
-  .ghost-btn:hover   { border-color: ${C.amber} !important; color: ${C.amber} !important; }
-
-  /* Textarea / input focus glow */
-  .note-textarea:focus { border-color: ${C.amber} !important; box-shadow: 0 0 0 3px rgba(200,120,32,0.12) !important; }
+  .note-textarea:focus  { border-color: ${C.amber} !important; box-shadow: 0 0 0 3px rgba(200,120,32,0.12) !important; }
   .note-textarea::placeholder { color: ${C.border}; }
-  .pass-input:focus   { border-color: ${C.amber} !important; box-shadow: 0 0 0 3px rgba(200,120,32,0.12) !important; }
+  .pass-input:focus     { border-color: ${C.amber} !important; box-shadow: 0 0 0 3px rgba(200,120,32,0.12) !important; }
   .pass-input::placeholder { color: ${C.border}; }
 
-  /* Animations */
   .spin     { animation: spin 0.8s linear infinite; }
   .btn-spin { animation: spin 0.7s linear infinite; display: inline-block; }
   @keyframes spin { to { transform: rotate(360deg); } }
@@ -1066,7 +835,6 @@ const CSS = `
     to   { opacity: 1; transform: translateY(0); }
   }
 
-  /* Scrollbar */
   ::selection { background: rgba(200,120,32,0.18); }
   ::-webkit-scrollbar { width: 5px; }
   ::-webkit-scrollbar-track { background: ${C.bgMuted}; }
