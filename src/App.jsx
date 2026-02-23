@@ -151,7 +151,7 @@ function CreateView() {
             <h2 style={S.cardTitle}>Note created.</h2>
             <p style={S.cardSub}>
               Expires in <strong style={{ color: C.amber }}>{formatExpiry(expiry)}</strong>{" "}
-              or after one read — whichever comes first.
+              or after one read, whichever comes first.
             </p>
           </div>
         </div>
@@ -171,7 +171,7 @@ function CreateView() {
         {password && (
           <div style={S.warningBox}>
             <span style={S.warningIcon}>🔒</span>
-            <span>Share the password separately — <strong>never</strong> in the same message as the link.</span>
+            <span>Share the password separately, <strong>never</strong> in the same message as the link.</span>
           </div>
         )}
 
@@ -416,7 +416,7 @@ function ReadView({ noteId }) {
       <div style={S.phaseIcon}>🔥</div>
       <h2 style={S.cardTitle}>Ready to read this note?</h2>
       <p style={S.cardSub}>
-        One read. Then it's gone — <strong style={{ color: C.amber }}>permanently deleted</strong> from our servers. No undo.
+        One read. Then it's gone, <strong style={{ color: C.amber }}>permanently deleted</strong> from our servers. No undo.
       </p>
       {meta?.createdAt && (
         <div style={S.pillRow}>
@@ -442,7 +442,7 @@ function ReadView({ noteId }) {
 
   if (phase === "content") return (
     <div style={S.card} className="fade-in">
-      <div style={S.destroyedBadge}>✓ Note destroyed — this was its only view</div>
+      <div style={S.destroyedBadge}>✓ Note destroyed, this was its only view</div>
       <div style={S.contentBox}>
         <pre style={S.contentPre}>{content}</pre>
       </div>
@@ -455,7 +455,7 @@ function ReadView({ noteId }) {
       </button>
       <div style={S.warningBox}>
         <span style={S.warningIcon}>⚠</span>
-        <span><strong>Save the content now</strong> — this note is permanently gone. Refreshing will not bring it back.</span>
+        <span><strong>Save the content now</strong>, this note is permanently gone. Refreshing will not bring it back.</span>
       </div>
       <a href="/" style={S.ghostBtn} className="ghost-btn">← Create a new note</a>
     </div>
@@ -520,9 +520,12 @@ export default function App() {
         <div style={S.footerInner}>
           <span style={S.footerBrand}><span style={{ color: C.amber }}>¬</span> notenotfound</span>
           <span style={S.footerMeta}>AES-256-GCM · Zero logs · MIT License</span>
-          <a href={GITHUB} target="_blank" rel="noreferrer" style={S.footerLink} className="nav-link">
-            <GithubIcon />mykelayo
-          </a>
+          <div style={{ display: "flex", alignItems: "center", gap: "20px" }}>
+            <a href="/terms" style={S.footerLink} className="nav-link">Terms & Privacy</a>
+            <a href={GITHUB} target="_blank" rel="noreferrer" style={S.footerLink} className="nav-link">
+              <GithubIcon />mykelayo
+            </a>
+          </div>
         </div>
       </footer>
     </div>
