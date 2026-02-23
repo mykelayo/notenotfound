@@ -1,8 +1,7 @@
 // src/App.jsx
-
 import { useState, useEffect } from "react";
 
-const GITHUB    = "https://github.com/mykelayo/onetimenote";
+const GITHUB    = "https://github.com/mykelayo/notenotfound";
 const MAX_CHARS = 10000;
 
 const EXPIRY_OPTIONS = [
@@ -43,23 +42,20 @@ function track(name, params = {}) {
 }
 
 // ── safeFetch ─────────────────────────────────────────────────────────────────
-// Checks Content-Type before calling .json()
-// Prevents "Unexpected end of JSON" when Vite dev server returns HTML for /api/* routes
-// Locally: use `netlify dev` — NOT `npm run dev` — or API calls will fail
+// Checks Content-Type before calling .json().
+// Locally: use `netlify dev` not `npm run dev` — Vite alone can't serve /api/* routes.
 async function safeFetch(url, options) {
   let res;
   try {
     res = await fetch(url, options);
-  } catch (err) {
-    throw new Error("Network error. Check your connection.");
+  } catch {
+    throw new Error("Network error. Check your connection and try again.");
   }
 
   const ct = res.headers.get("content-type") || "";
   if (!ct.includes("application/json")) {
     if (res.status === 404) {
-      throw new Error(
-        "API route not found. If running locally, use `netlify dev` instead of `npm run dev`."
-      );
+      throw new Error("API route not found. Locally: use `netlify dev` instead of `npm run dev`.");
     }
     throw new Error(`Unexpected server response (${res.status}). Check Netlify function logs.`);
   }
@@ -68,7 +64,7 @@ async function safeFetch(url, options) {
   return { data, status: res.status, ok: res.ok };
 }
 
-// ── API calls ─────────────────────────────────────────────────────────────────
+// ── API calls (all relative paths — works on localhost and production) ────────
 
 async function apiCreateNote(content, password, expirySeconds) {
   const { data, ok } = await safeFetch("/api/create-note", {
@@ -80,7 +76,6 @@ async function apiCreateNote(content, password, expirySeconds) {
   return data;
 }
 
-// Step 1: check note exists, get metadata — does NOT destroy note
 async function apiCheckNote(id, password) {
   const body = { id, confirm: false };
   if (password) body.password = password;
@@ -92,7 +87,6 @@ async function apiCheckNote(id, password) {
   return { ...data, _status: status };
 }
 
-// Step 2: read content and destroy note
 async function apiDestroyNote(id, password) {
   const body = { id, confirm: true };
   if (password) body.password = password;
@@ -148,7 +142,6 @@ function CreateView() {
     setExpiry(86400); setError(null); setCopied(false);
   }
 
-  // ── Success ────────────────────────────────────────────────────────────────
   if (result) {
     return (
       <div style={S.card} className="fade-in">
@@ -187,7 +180,6 @@ function CreateView() {
     );
   }
 
-  // ── Form ───────────────────────────────────────────────────────────────────
   return (
     <div style={S.card}>
       <div>
@@ -203,7 +195,6 @@ function CreateView() {
           onChange={(e) => setContent(e.target.value)}
           rows={7}
           className="note-textarea"
-          aria-label="Note content"
         />
         <div style={S.charRow}>
           {overLimit  && <span style={S.charErr}>Over limit — trim your note</span>}
@@ -269,7 +260,7 @@ function CreateView() {
       </button>
 
       <p style={S.disclaimer}>
-        AES-256 encrypted · Zero logs · We cannot read your notes · Open source
+        AES-256-GCM encrypted · Zero logs · We cannot read your notes · Open source
       </p>
     </div>
   );
@@ -287,7 +278,6 @@ function ReadView({ noteId }) {
   const [loading,  setLoading]  = useState(false);
   const [errMsg,   setErrMsg]   = useState(null);
 
-  // Step 1: check note exists on mount — does NOT destroy note
   useEffect(() => {
     let cancelled = false;
     async function check() {
@@ -313,7 +303,6 @@ function ReadView({ noteId }) {
     return () => { cancelled = true; };
   }, [noteId]);
 
-  // Password check (still confirm:false — just verifying password, not destroying)
   async function handlePasswordSubmit() {
     if (!password.trim()) return;
     setLoading(true);
@@ -328,45 +317,37 @@ function ReadView({ noteId }) {
       } else if (data._status === 404) {
         setPhase("dead");
       } else {
-        setErrMsg(data.error || "Unexpected server response.");
+        setErrMsg(data.error || "Unexpected response.");
         setPhase("error");
       }
     } catch (err) {
-      setErrMsg(err.message);
-      setPhase("error");
+      setErrMsg(err.message); setPhase("error");
     } finally {
       setLoading(false);
     }
   }
 
-  // Step 2: decrypt + destroy
   async function handleConfirm() {
     setLoading(true);
     try {
       const data = await apiDestroyNote(noteId, password || null);
-
       if (data._status === 200 && data.content != null) {
-        // Content returned — note successfully read and destroyed
         setContent(data.content);
         setPhase("content");
         track("note_read_and_destroyed");
       } else if (data._status === 404) {
-        // Note was gone before we could read it (already used or expired)
         setPhase("dead");
       } else {
-        // Something went wrong (e.g. decrypt error) — show specific message
         setErrMsg(data.error || "Something went wrong reading the note.");
         setPhase("error");
       }
     } catch (err) {
-      setErrMsg(err.message);
-      setPhase("error");
+      setErrMsg(err.message); setPhase("error");
     } finally {
       setLoading(false);
     }
   }
 
-  // ── Loading ────────────────────────────────────────────────────────────────
   if (phase === "loading") return (
     <div style={{ ...S.card, alignItems: "center", gap: "16px" }} className="fade-in">
       <div style={S.loadRing} className="spin" />
@@ -374,44 +355,34 @@ function ReadView({ noteId }) {
     </div>
   );
 
-  // ── Error (network / server) — separate from "dead" ───────────────────────
   if (phase === "error") return (
     <div style={{ ...S.card, alignItems: "center", textAlign: "center" }} className="fade-in">
       <div style={S.phaseIcon}>⚠️</div>
       <h2 style={S.cardTitle}>Something went wrong.</h2>
       <p style={S.cardSub}>{errMsg}</p>
       <div style={{ display: "flex", gap: "10px", flexWrap: "wrap", justifyContent: "center" }}>
-        <button
-          style={S.ghostBtn}
-          onClick={() => { setErrMsg(null); setPhase("loading"); }}
-          className="ghost-btn"
-        >
-          Try again
-        </button>
+        <button style={S.ghostBtn} onClick={() => { setErrMsg(null); setPhase("loading"); }} className="ghost-btn">Try again</button>
         <a href="/" style={S.ghostBtn} className="ghost-btn">← Create a note</a>
       </div>
     </div>
   );
 
-  // ── Dead / not found ───────────────────────────────────────────────────────
   if (phase === "dead") return (
     <div style={{ ...S.card, textAlign: "center", alignItems: "center" }} className="fade-in">
-      <div style={S.deadIcon}>𝕏</div>
-      <h2 style={S.cardTitle}>This note no longer exists.</h2>
+      <div style={S.deadIcon}>404</div>
+      <h2 style={S.cardTitle}>Note not found.</h2>
       <p style={S.cardSub}>
-        It was already read, has expired, or was never created.
-        One-time notes vanish after a single view — forever, by design.
+        Already read, expired, or never created. One-time notes vanish after a single view — forever, by design.
       </p>
       <a href="/" style={S.ghostBtn} className="ghost-btn">← Create a new note</a>
     </div>
   );
 
-  // ── Password ───────────────────────────────────────────────────────────────
   if (phase === "password") return (
     <div style={{ ...S.card, textAlign: "center", alignItems: "center" }} className="fade-in">
       <div style={S.phaseIcon}>🔒</div>
       <h2 style={S.cardTitle}>Password required</h2>
-      <p style={S.cardSub}>The sender protected this note. Enter the password to continue.</p>
+      <p style={S.cardSub}>The sender protected this note.</p>
       <div style={{ ...S.passRow, width: "100%" }}>
         <input
           style={{ ...S.passInput, width: "100%", ...(passErr ? S.passInputErr : {}) }}
@@ -440,14 +411,12 @@ function ReadView({ noteId }) {
     </div>
   );
 
-  // ── Confirm ────────────────────────────────────────────────────────────────
   if (phase === "confirm") return (
     <div style={{ ...S.card, textAlign: "center", alignItems: "center" }} className="fade-in">
       <div style={S.phaseIcon}>🔥</div>
       <h2 style={S.cardTitle}>Ready to read this note?</h2>
       <p style={S.cardSub}>
-        This is a <strong>one-time note</strong>. The moment you open it, it is{" "}
-        <strong style={{ color: C.amber }}>permanently deleted</strong>. No undo.
+        One read. Then it's gone — <strong style={{ color: C.amber }}>permanently deleted</strong> from our servers. No undo.
       </p>
       {meta?.createdAt && (
         <div style={S.pillRow}>
@@ -471,35 +440,23 @@ function ReadView({ noteId }) {
     </div>
   );
 
-  // ── Content ────────────────────────────────────────────────────────────────
   if (phase === "content") return (
     <div style={S.card} className="fade-in">
       <div style={S.destroyedBadge}>✓ Note destroyed — this was its only view</div>
-
       <div style={S.contentBox}>
         <pre style={S.contentPre}>{content}</pre>
       </div>
-
       <button
         style={{ ...S.amberBtn, ...(copied ? S.amberBtnDone : {}), alignSelf: "flex-start" }}
-        onClick={() => {
-          navigator.clipboard.writeText(content);
-          setCopied(true);
-          setTimeout(() => setCopied(false), 2000);
-        }}
+        onClick={() => { navigator.clipboard.writeText(content); setCopied(true); setTimeout(() => setCopied(false), 2000); }}
         className="amber-btn"
       >
         {copied ? "✓ Copied!" : "Copy content"}
       </button>
-
       <div style={S.warningBox}>
         <span style={S.warningIcon}>⚠</span>
-        <span>
-          This note is gone from our servers.{" "}
-          <strong>Save the content now</strong> — refreshing this page will not bring it back.
-        </span>
+        <span><strong>Save the content now</strong> — this note is permanently gone. Refreshing will not bring it back.</span>
       </div>
-
       <a href="/" style={S.ghostBtn} className="ghost-btn">← Create a new note</a>
     </div>
   );
@@ -533,7 +490,7 @@ export default function App() {
 
       <nav style={S.nav}>
         <a href="/" style={S.navLogo}>
-          <span style={S.navLogoGlyph}>◈</span>OneTimeNote
+          <span style={S.navLogoGlyph}>¬</span>notenotfound
         </a>
         <div style={S.navRight}>
           <a href={GITHUB} target="_blank" rel="noreferrer" style={S.navLink} className="nav-link">
@@ -561,8 +518,8 @@ export default function App() {
 
       <footer style={S.footer}>
         <div style={S.footerInner}>
-          <span style={S.footerBrand}><span style={{ color: C.amber }}>◈</span> OneTimeNote</span>
-          <span style={S.footerMeta}>AES-256 · Zero logs · MIT License</span>
+          <span style={S.footerBrand}><span style={{ color: C.amber }}>¬</span> notenotfound</span>
+          <span style={S.footerMeta}>AES-256-GCM · Zero logs · MIT License</span>
           <a href={GITHUB} target="_blank" rel="noreferrer" style={S.footerLink} className="nav-link">
             <GithubIcon />mykelayo
           </a>
@@ -605,11 +562,11 @@ const S = {
     position: "sticky", top: 0, zIndex: 100,
   },
   navLogo: {
-    display: "flex", alignItems: "center", gap: "8px", fontSize: "17px",
+    display: "flex", alignItems: "center", gap: "6px", fontSize: "17px",
     fontWeight: "700", color: C.text, textDecoration: "none",
-    fontFamily: "'Playfair Display', serif",
+    fontFamily: "'IBM Plex Mono', monospace", letterSpacing: "-0.5px",
   },
-  navLogoGlyph: { color: C.amber, fontSize: "18px" },
+  navLogoGlyph: { color: C.amber, fontSize: "20px", fontFamily: "monospace" },
   navRight: { display: "flex", alignItems: "center", gap: "24px" },
   navLink: {
     display: "flex", alignItems: "center", color: C.muted, textDecoration: "none",
@@ -642,8 +599,7 @@ const S = {
     boxShadow: "0 2px 8px rgba(26,15,0,0.06), 0 20px 48px rgba(26,15,0,0.08)",
   },
   cardTitle: {
-    fontSize: "22px", fontWeight: "700", fontFamily: "'Playfair Display', serif",
-    color: C.text, margin: 0,
+    fontSize: "22px", fontWeight: "700", fontFamily: "'Playfair Display', serif", color: C.text, margin: 0,
   },
   cardSub: { fontSize: "14px", color: C.textSub, lineHeight: "1.7", margin: 0 },
   fieldGroup: { display: "flex", flexDirection: "column", gap: "6px" },
@@ -741,7 +697,7 @@ const S = {
   linkLabel: { fontSize: "9px", fontFamily: "'IBM Plex Mono', monospace", letterSpacing: "3px", color: C.muted },
   linkValue: { fontSize: "13px", fontFamily: "'IBM Plex Mono', monospace", color: C.text, wordBreak: "break-all", lineHeight: "1.5" },
   loadRing: { width: "32px", height: "32px", border: `2px solid ${C.border}`, borderTop: `2px solid ${C.amber}`, borderRadius: "50%" },
-  deadIcon: { fontSize: "44px", textAlign: "center", color: C.border, fontFamily: "'Playfair Display', serif" },
+  deadIcon: { fontSize: "clamp(40px,8vw,56px)", textAlign: "center", color: C.amber, fontFamily: "'IBM Plex Mono', monospace", fontWeight: "700", letterSpacing: "-2px" },
   phaseIcon: { fontSize: "44px", textAlign: "center" },
   pillRow: { display: "flex", justifyContent: "center", gap: "8px", flexWrap: "wrap" },
   pill: {
@@ -766,7 +722,7 @@ const S = {
     display: "flex", justifyContent: "space-between", alignItems: "center",
     flexWrap: "wrap", gap: "12px", maxWidth: "1000px", margin: "0 auto",
   },
-  footerBrand: { fontSize: "14px", fontWeight: "600", color: C.textSub, fontFamily: "'Playfair Display', serif", display: "flex", alignItems: "center", gap: "6px" },
+  footerBrand: { fontSize: "14px", fontWeight: "700", color: C.textSub, fontFamily: "'IBM Plex Mono', monospace", display: "flex", alignItems: "center", gap: "6px" },
   footerMeta: { fontSize: "11px", fontFamily: "'IBM Plex Mono', monospace", color: C.muted },
   footerLink: { display: "flex", alignItems: "center", color: C.muted, textDecoration: "none", fontSize: "12px", fontFamily: "'IBM Plex Mono', monospace", transition: "color 0.15s" },
 };
