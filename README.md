@@ -1,6 +1,6 @@
 # ¬ notenotfound
 
-**Self-destructing encrypted notes. Share a secret — it vanishes after one read.**
+**Self-destructing encrypted notes. Share a secret and it vanishes after one read.**
 
 Live → **[notenotfound.netlify.app](https://notenotfound.netlify.app)**
 
@@ -37,24 +37,22 @@ If never opened, it auto-deletes after your chosen expiry (1h / 24h / 3d / 7d).
 
 ---
 
-## Project structure
+## Project Structure
 
 ```
 notenotfound/
-├── netlify/functions/
-│   ├── create-note.js    ← POST /api/create-note
-│   └── read-note.js      ← POST /api/read-note
-├── public/
-│   ├── favicon.svg
-│   ├── robots.txt
-│   └── sitemap.xml
+├── index.html                    
+│
 ├── src/
-│   ├── App.jsx           ← full app (create + read views)
-│   └── main.jsx          ← React Router entry point
-├── index.html            ← SEO, schema markup, OG tags
-├── netlify.toml          ← build config, redirects, security headers
-├── .env.example
-└── .gitignore
+│   ├── config.js                 
+│   ├── main.jsx                  
+│   ├── App.jsx                   
+│   └── Terms.jsx                 
+│
+└── netlify/functions/
+    ├── config.js                 
+    ├── create-note.js            
+    └── read-note.js              
 ```
 
 ---
@@ -164,4 +162,4 @@ Response `404`: note not found, already read, or expired
 
 ## License
 
-MIT. Built by [mykelayo](https://github.com/mykelayo).
+MIT. Built by [mykelayo](https://github.com/mykelayo/notenotfound).

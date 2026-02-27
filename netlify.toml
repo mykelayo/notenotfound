@@ -20,7 +20,7 @@
   to     = "/index.html"
   status = 200
 
-# Security headers
+# Security headers applied to every response
 [[headers]]
   for = "/*"
   [headers.values]
@@ -30,7 +30,21 @@
     Referrer-Policy        = "strict-origin-when-cross-origin"
     Permissions-Policy     = "camera=(), microphone=(), geolocation=()"
 
-# Cache static assets aggressively
+    # Content-Security-Policy.
+    # Google Translate requires:
+    #   script-src  translate.google.com translate.googleapis.com
+    #   connect-src translate.googleapis.com
+    #   frame-src   translate.google.com (widget iframe)
+    #   img-src     www.gstatic.com (translate logo/icons)
+    # If you add Google Analytics, also add:
+    #   script-src  www.googletagmanager.com www.google-analytics.com
+    #   connect-src www.google-analytics.com
+    # If you add Google AdSense, also add:
+    #   script-src  pagead2.googlesyndication.com
+    #   frame-src   googleads.g.doubleclick.net
+    Content-Security-Policy = "default-src 'self'; script-src 'self' 'unsafe-inline' translate.google.com translate.googleapis.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; connect-src 'self' translate.googleapis.com; img-src 'self' data: https: www.gstatic.com; frame-src translate.google.com; frame-ancestors 'none'"
+
+# Cache static assets aggressively — Vite fingerprints filenames so this is safe
 [[headers]]
   for = "/assets/*"
   [headers.values]

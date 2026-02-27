@@ -1,35 +1,23 @@
 // src/App.jsx
-import { useState, useEffect } from "react";
-
-const GITHUB    = "https://github.com/mykelayo/notenotfound";
-const MAX_CHARS = 10000;
-
-const EXPIRY_OPTIONS = [
-  { label: "1 hour",   seconds: 3600   },
-  { label: "24 hours", seconds: 86400  },
-  { label: "3 days",   seconds: 259200 },
-  { label: "7 days",   seconds: 604800 },
-];
+import { useState, useEffect, useCallback } from "react";
+import { useParams } from "react-router-dom";
+import { GITHUB_URL, AUTHOR, MAX_CHARS, EXPIRY_OPTIONS } from "./config.js";
+import { useTheme } from "./theme.js";
+import Nav, { GithubIcon, navCSS } from "./Nav.jsx";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-
-function getNoteIdFromURL() {
-  const match = window.location.pathname.match(/^\/note\/([a-f0-9]{32})$/);
-  return match ? match[1] : null;
-}
 
 function getShareableLink(id) {
   return `${window.location.origin}/note/${id}`;
 }
 
 function formatExpiry(seconds) {
-  if (seconds <= 3600)   return "1 hour";
-  if (seconds <= 86400)  return "24 hours";
-  if (seconds <= 259200) return "3 days";
-  return "7 days";
+  const opt = EXPIRY_OPTIONS.find(o => o.seconds === seconds);
+  return opt ? opt.label : "24 hours";
 }
 
 function timeAgo(ts) {
+  if (!ts) return "unknown time";
   const mins  = Math.floor((Date.now() - ts) / 60000);
   const hours = Math.floor(mins / 60);
   if (mins < 1)  return "just now";
@@ -41,15 +29,49 @@ function track(name, params = {}) {
   if (typeof window.gtag === "function") window.gtag("event", name, params);
 }
 
+// clipboard fallback for browsers/contexts where navigator.clipboard is unavailable
+// (HTTP, some mobile browsers, permissions denied).
+function copyToClipboard(text) {
+  if (navigator.clipboard?.writeText) {
+    return navigator.clipboard.writeText(text).catch(() => execCommandCopy(text));
+  }
+  return execCommandCopy(text);
+}
+
+function execCommandCopy(text) {
+  try {
+    const el = document.createElement("textarea");
+    el.value = text;
+    el.style.cssText = "position:fixed;top:-9999px;left:-9999px;opacity:0;";
+    document.body.appendChild(el);
+    el.focus();
+    el.select();
+    document.execCommand("copy");
+    document.body.removeChild(el);
+    return Promise.resolve();
+  } catch {
+    return Promise.reject(new Error("Copy not supported in this browser."));
+  }
+}
+
+// check if browser supports Web Share API and the data is shareable
+function canShare(data) {
+  return typeof navigator.share === "function" && navigator.canShare?.(data);
+}
+
 // ── safeFetch ─────────────────────────────────────────────────────────────────
-// Checks Content-Type before calling .json().
-// Locally: use `netlify dev` not `npm run dev` — Vite alone can't serve /api/* routes.
+
 async function safeFetch(url, options) {
   let res;
   try {
     res = await fetch(url, options);
   } catch {
     throw new Error("Network error. Check your connection and try again.");
+  }
+
+  // handle 429 rate-limit explicitly with a clear user message
+  if (res.status === 429) {
+    throw new Error("Too many requests. Slow down and try again in a moment.");
   }
 
   const ct = res.headers.get("content-type") || "";
@@ -64,7 +86,7 @@ async function safeFetch(url, options) {
   return { data, status: res.status, ok: res.ok };
 }
 
-// ── API calls (all relative paths — works on localhost and production) ────────
+// ── API ───────────────────────────────────────────────────────────────────────
 
 async function apiCreateNote(content, password, expirySeconds) {
   const { data, ok } = await safeFetch("/api/create-note", {
@@ -100,7 +122,7 @@ async function apiDestroyNote(id, password) {
 
 // ── Create View ───────────────────────────────────────────────────────────────
 
-function CreateView() {
+function CreateView({ C }) {
   const [content,  setContent]  = useState("");
   const [password, setPassword] = useState("");
   const [showPass, setShowPass] = useState(false);
@@ -108,8 +130,10 @@ function CreateView() {
   const [loading,  setLoading]  = useState(false);
   const [result,   setResult]   = useState(null);
   const [copied,   setCopied]   = useState(false);
+  const [shared,   setShared]   = useState(false);
   const [error,    setError]    = useState(null);
 
+  const S = makeStyles(C);
   const chars     = content.length;
   const overLimit = chars > MAX_CHARS;
   const nearLimit = chars > MAX_CHARS * 0.8;
@@ -130,19 +154,41 @@ function CreateView() {
     }
   }
 
-  function copyLink() {
-    navigator.clipboard.writeText(getShareableLink(result.id));
-    setCopied(true);
-    track("link_copied");
-    setTimeout(() => setCopied(false), 2000);
+  async function handleCopy() {
+    const link = getShareableLink(result.id);
+    try {
+      await copyToClipboard(link);
+      setCopied(true);
+      track("link_copied");
+      setTimeout(() => setCopied(false), 2500);
+    } catch {
+      setError("Could not copy automatically. Please copy the link manually.");
+    }
+  }
+
+  async function handleShare() {
+    const link = getShareableLink(result.id);
+    const shareData = {
+      title: "Secret note",
+      text:  "I've shared a self-destructing note with you. It will vanish after one read.",
+      url:   link,
+    };
+    try {
+      await navigator.share(shareData);
+      setShared(true);
+      track("link_shared");
+      setTimeout(() => setShared(false), 2500);
+    } catch {}
   }
 
   function reset() {
     setResult(null); setContent(""); setPassword("");
-    setExpiry(86400); setError(null); setCopied(false);
+    setExpiry(86400); setError(null); setCopied(false); setShared(false);
   }
 
   if (result) {
+    const link = getShareableLink(result.id);
+    const shareAvailable = canShare({ title: "Secret note", url: link });
     return (
       <div style={S.card} className="fade-in">
         <div style={S.successTop}>
@@ -158,20 +204,39 @@ function CreateView() {
 
         <div style={S.linkCard}>
           <div style={S.linkLabel}>ONE-TIME LINK</div>
-          <div style={S.linkValue}>{getShareableLink(result.id)}</div>
-          <button
-            style={{ ...S.amberBtn, ...(copied ? S.amberBtnDone : {}) }}
-            onClick={copyLink}
-            className="amber-btn"
-          >
-            {copied ? "✓ Copied to clipboard" : "Copy link"}
-          </button>
+          <div style={S.linkValue}>{link}</div>
+          <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+            <button
+              style={{ ...S.amberBtn, ...(copied ? S.amberBtnDone : {}) }}
+              onClick={handleCopy}
+              className="amber-btn"
+            >
+              {copied ? "✓ Copied!" : "Copy link"}
+            </button>
+            {/* Web Share API button — only shown on devices that support it (mainly mobile) */}
+            {shareAvailable && (
+              <button
+                style={{ ...S.amberBtn, ...(shared ? S.amberBtnDone : {}) }}
+                onClick={handleShare}
+                className="amber-btn"
+              >
+                {shared ? "✓ Shared!" : "↗ Share"}
+              </button>
+            )}
+          </div>
         </div>
 
         {password && (
           <div style={S.warningBox}>
             <span style={S.warningIcon}>🔒</span>
-            <span>Share the password separately, <strong>never</strong> in the same message as the link.</span>
+            <span>Share the password separately. <strong>Never</strong> send it in the same message as the link.</span>
+          </div>
+        )}
+
+        {error && (
+          <div style={S.errorBox} role="alert">
+            <span style={S.errorIcon}>!</span>
+            <span>{error}</span>
           </div>
         )}
 
@@ -194,10 +259,11 @@ function CreateView() {
           value={content}
           onChange={(e) => setContent(e.target.value)}
           rows={7}
+          autoFocus
           className="note-textarea"
         />
         <div style={S.charRow}>
-          {overLimit  && <span style={S.charErr}>Over limit — trim your note</span>}
+          {overLimit   && <span style={S.charErr}>Over limit. Trim your note.</span>}
           {nearLimit && !overLimit && <span style={S.charWarn}>{(MAX_CHARS - chars).toLocaleString()} left</span>}
           {!nearLimit && !overLimit && <span />}
           <span style={{ ...S.charNum, color: overLimit ? C.red : nearLimit ? C.amber : C.muted }}>
@@ -224,7 +290,7 @@ function CreateView() {
         </div>
 
         <div style={S.optBlock}>
-          <label style={S.optLabel}>PASSWORD <span style={S.optHint}>— OPTIONAL</span></label>
+          <label style={S.optLabel}>PASSWORD <span style={{ color: C.border }}>, OPTIONAL</span></label>
           <div style={S.passRow}>
             <input
               style={S.passInput}
@@ -234,7 +300,7 @@ function CreateView() {
               onChange={(e) => setPassword(e.target.value)}
               className="pass-input"
             />
-            <button style={S.showPassBtn} onClick={() => setShowPass((p) => !p)} className="show-pass-btn">
+            <button style={S.showPassBtn} onClick={() => setShowPass(p => !p)} className="show-pass-btn">
               {showPass ? "Hide" : "Show"}
             </button>
           </div>
@@ -260,7 +326,7 @@ function CreateView() {
       </button>
 
       <p style={S.disclaimer}>
-        AES-256-GCM encrypted · Zero logs · We cannot read your notes · Open source
+        AES-256-GCM encrypted. Zero logs. We cannot read your notes. Open source.
       </p>
     </div>
   );
@@ -268,7 +334,10 @@ function CreateView() {
 
 // ── Read View ─────────────────────────────────────────────────────────────────
 
-function ReadView({ noteId }) {
+// Valid note ID regex — must match netlify/functions/config.js NOTE_ID_REGEX
+const NOTE_ID_REGEX = /^[a-f0-9]{32}$/;
+
+function ReadView({ noteId, C }) {
   const [phase,    setPhase]    = useState("loading");
   const [meta,     setMeta]     = useState(null);
   const [password, setPassword] = useState("");
@@ -278,30 +347,39 @@ function ReadView({ noteId }) {
   const [loading,  setLoading]  = useState(false);
   const [errMsg,   setErrMsg]   = useState(null);
 
-  useEffect(() => {
-    let cancelled = false;
-    async function check() {
-      try {
-        const data = await apiCheckNote(noteId, null);
-        if (cancelled) return;
-        if (data._status === 404) {
-          setPhase("dead");
-        } else if (data._status === 401 || data.passwordRequired) {
-          setPhase("password");
-        } else if (data._status === 200 && data.exists) {
-          setMeta(data);
-          setPhase("confirm");
-        } else {
-          setErrMsg(data.error || "Unexpected server response.");
-          setPhase("error");
-        }
-      } catch (err) {
-        if (!cancelled) { setErrMsg(err.message); setPhase("error"); }
-      }
+  const S = makeStyles(C);
+
+  const checkNote = useCallback(async () => {
+    setPhase("loading");
+    setErrMsg(null);
+
+    // validate ID format on the frontend before making any API call.
+    // If someone visits /note/garbage, show 404 immediately without a round trip.
+    if (!NOTE_ID_REGEX.test(noteId)) {
+      setPhase("dead");
+      return;
     }
-    check();
-    return () => { cancelled = true; };
+
+    try {
+      const data = await apiCheckNote(noteId, null);
+      if (data._status === 404) {
+        setPhase("dead");
+      } else if (data._status === 401 || data.passwordRequired) {
+        setPhase("password");
+      } else if (data._status === 200 && data.exists) {
+        setMeta(data);
+        setPhase("confirm");
+      } else {
+        setErrMsg(data.error || "Unexpected server response.");
+        setPhase("error");
+      }
+    } catch (err) {
+      setErrMsg(err.message);
+      setPhase("error");
+    }
   }, [noteId]);
+
+  useEffect(() => { checkNote(); }, [checkNote]);
 
   async function handlePasswordSubmit() {
     if (!password.trim()) return;
@@ -312,13 +390,11 @@ function ReadView({ noteId }) {
       if (data._status === 401 || data._status === 403) {
         setPassErr(true);
       } else if (data._status === 200 && data.exists) {
-        setMeta(data);
-        setPhase("confirm");
+        setMeta(data); setPhase("confirm");
       } else if (data._status === 404) {
         setPhase("dead");
       } else {
-        setErrMsg(data.error || "Unexpected response.");
-        setPhase("error");
+        setErrMsg(data.error || "Unexpected response."); setPhase("error");
       }
     } catch (err) {
       setErrMsg(err.message); setPhase("error");
@@ -338,14 +414,21 @@ function ReadView({ noteId }) {
       } else if (data._status === 404) {
         setPhase("dead");
       } else {
-        setErrMsg(data.error || "Something went wrong reading the note.");
-        setPhase("error");
+        setErrMsg(data.error || "Something went wrong."); setPhase("error");
       }
     } catch (err) {
       setErrMsg(err.message); setPhase("error");
     } finally {
       setLoading(false);
     }
+  }
+
+  async function handleCopyContent() {
+    try {
+      await copyToClipboard(content);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2500);
+    } catch {}
   }
 
   if (phase === "loading") return (
@@ -361,7 +444,7 @@ function ReadView({ noteId }) {
       <h2 style={S.cardTitle}>Something went wrong.</h2>
       <p style={S.cardSub}>{errMsg}</p>
       <div style={{ display: "flex", gap: "10px", flexWrap: "wrap", justifyContent: "center" }}>
-        <button style={S.ghostBtn} onClick={() => { setErrMsg(null); setPhase("loading"); }} className="ghost-btn">Try again</button>
+        <button style={S.ghostBtn} onClick={checkNote} className="ghost-btn">Try again</button>
         <a href="/" style={S.ghostBtn} className="ghost-btn">← Create a note</a>
       </div>
     </div>
@@ -372,7 +455,7 @@ function ReadView({ noteId }) {
       <div style={S.deadIcon}>404</div>
       <h2 style={S.cardTitle}>Note not found.</h2>
       <p style={S.cardSub}>
-        Already read, expired, or never created. One-time notes vanish after a single view — forever, by design.
+        Already read, expired, or never created. One-time notes vanish after a single view. Gone forever, by design.
       </p>
       <a href="/" style={S.ghostBtn} className="ghost-btn">← Create a new note</a>
     </div>
@@ -442,20 +525,20 @@ function ReadView({ noteId }) {
 
   if (phase === "content") return (
     <div style={S.card} className="fade-in">
-      <div style={S.destroyedBadge}>✓ Note destroyed, this was its only view</div>
+      <div style={S.destroyedBadge}>Note destroyed. This was its only view.</div>
       <div style={S.contentBox}>
         <pre style={S.contentPre}>{content}</pre>
       </div>
       <button
         style={{ ...S.amberBtn, ...(copied ? S.amberBtnDone : {}), alignSelf: "flex-start" }}
-        onClick={() => { navigator.clipboard.writeText(content); setCopied(true); setTimeout(() => setCopied(false), 2000); }}
+        onClick={handleCopyContent}
         className="amber-btn"
       >
         {copied ? "✓ Copied!" : "Copy content"}
       </button>
       <div style={S.warningBox}>
         <span style={S.warningIcon}>⚠</span>
-        <span><strong>Save the content now</strong>, this note is permanently gone. Refreshing will not bring it back.</span>
+        <span><strong>Save the content now.</strong> This note is permanently gone. Refreshing will not bring it back.</span>
       </div>
       <a href="/" style={S.ghostBtn} className="ghost-btn">← Create a new note</a>
     </div>
@@ -464,40 +547,25 @@ function ReadView({ noteId }) {
   return null;
 }
 
-// ── GitHub icon ───────────────────────────────────────────────────────────────
-
-function GithubIcon({ size = 15 }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor"
-      style={{ verticalAlign: "middle", marginRight: "5px" }}>
-      <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z" />
-    </svg>
-  );
-}
-
 // ── Root App ──────────────────────────────────────────────────────────────────
 
 export default function App() {
-  const noteId = getNoteIdFromURL();
+  const { id: noteId } = useParams();
+  const { C, isDark }  = useTheme();
 
   useEffect(() => {
     track("page_view", { page: noteId ? "read_note" : "create_note" });
-  }, []);
+  }, [noteId]);
+
+  const S = makeStyles(C);
 
   return (
     <div style={S.root}>
-      <style>{CSS}</style>
+      <style>{globalCSS(C) + navCSS(C)}</style>
 
-      <nav style={S.nav}>
-        <a href="/" style={S.navLogo}>
-          <span style={S.navLogoGlyph}>¬</span>notenotfound
-        </a>
-        <div style={S.navRight}>
-          <a href={GITHUB} target="_blank" rel="noreferrer" style={S.navLink} className="nav-link">
-            <GithubIcon />mykelayo
-          </a>
-        </div>
-      </nav>
+      <Nav links={[
+        { href: "/terms", label: "Terms & Privacy" },
+      ]} />
 
       <main style={S.main}>
         {!noteId && (
@@ -509,21 +577,21 @@ export default function App() {
             </h1>
             <p style={S.heroSub}>
               Write a private, encrypted note. Share the link. It self-destructs
-              the moment it's read, and we have no way to recover it.
+              the moment it's read. We have no way to recover it.
             </p>
           </div>
         )}
-        {noteId ? <ReadView noteId={noteId} /> : <CreateView />}
+        {noteId ? <ReadView noteId={noteId} C={C} /> : <CreateView C={C} />}
       </main>
 
       <footer style={S.footer}>
         <div style={S.footerInner}>
           <span style={S.footerBrand}><span style={{ color: C.amber }}>¬</span> notenotfound</span>
-          <span style={S.footerMeta}>AES-256-GCM · Zero logs · MIT License</span>
-          <div style={{ display: "flex", alignItems: "center", gap: "20px" }}>
-            <a href="/terms" style={S.footerLink} className="nav-link">Terms & Privacy</a>
-            <a href={GITHUB} target="_blank" rel="noreferrer" style={S.footerLink} className="nav-link">
-              <GithubIcon />mykelayo
+          <span style={S.footerMeta}>AES-256-GCM. Zero logs. MIT License.</span>
+          <div style={{ display: "flex", alignItems: "center", gap: "20px", flexWrap: "wrap" }}>
+            <a href="/terms" style={S.footerLink} className="nnf-nav-link">Terms & Privacy</a>
+            <a href={GITHUB_URL} target="_blank" rel="noreferrer" style={S.footerLink} className="nnf-nav-link">
+              <GithubIcon />{AUTHOR}
             </a>
           </div>
         </div>
@@ -532,236 +600,233 @@ export default function App() {
   );
 }
 
-// ── Design tokens ─────────────────────────────────────────────────────────────
+// ── Styles (generated from theme) ─────────────────────────────────────────────
 
-const C = {
-  bg:         "#faf5ee",
-  bgCard:     "#ffffff",
-  bgInput:    "#fdf8f2",
-  bgMuted:    "#f5ede0",
-  border:     "#e8d5b8",
-  text:       "#1a0f00",
-  textSub:    "#6b4c2a",
-  muted:      "#a07850",
-  amber:      "#c87820",
-  amberHover: "#a86010",
-  amberLight: "#fef4e0",
-  green:      "#2d7a4a",
-  greenLight: "#edf7f1",
-  red:        "#b83225",
-  redLight:   "#fdf0ee",
-};
+function makeStyles(C) {
+  return {
+    root: {
+      background: C.bg, minHeight: "100vh", fontFamily: "'DM Sans', sans-serif",
+      color: C.text, display: "flex", flexDirection: "column",
+      transition: "background 0.2s, color 0.2s",
+      backgroundImage: `radial-gradient(ellipse at 20% 0%, ${C.amberLight}55 0%, transparent 60%),
+                        radial-gradient(ellipse at 80% 100%, ${C.amberLight}33 0%, transparent 60%)`,
+    },
+    main: {
+      flex: 1, display: "flex", flexDirection: "column", alignItems: "center",
+      justifyContent: "center", padding: "48px clamp(16px,4vw,20px)", gap: "40px",
+    },
+    hero:       { textAlign: "center", maxWidth: "540px" },
+    heroBadge: {
+      display: "inline-block", background: C.amberLight, border: `1px solid ${C.border}`,
+      borderRadius: "20px", padding: "5px 16px", fontSize: "11px",
+      fontFamily: "'IBM Plex Mono', monospace", letterSpacing: "2px",
+      color: C.amber, marginBottom: "28px",
+    },
+    heroTitle: {
+      fontSize: "clamp(36px,7vw,64px)", fontWeight: "700",
+      fontFamily: "'Playfair Display', serif",
+      color: C.text, margin: "0 0 18px 0", lineHeight: "1.1", letterSpacing: "-1.5px",
+      transition: "color 0.2s",
+    },
+    heroEmphasis: { fontStyle: "italic", color: C.amber },
+    heroSub: {
+      fontSize: "clamp(14px,2vw,16px)", color: C.textSub, lineHeight: "1.8", margin: 0,
+      maxWidth: "420px", marginLeft: "auto", marginRight: "auto",
+    },
+    card: {
+      background: C.bgCard, border: `1px solid ${C.border}`, borderRadius: "16px",
+      padding: "clamp(20px,4vw,40px)", width: "100%", maxWidth: "580px",
+      display: "flex", flexDirection: "column", gap: "24px",
+      boxShadow: "0 2px 8px rgba(0,0,0,0.08), 0 20px 48px rgba(0,0,0,0.1)",
+      transition: "background 0.2s, border-color 0.2s",
+    },
+    cardTitle: {
+      fontSize: "clamp(18px,3vw,22px)", fontWeight: "700",
+      fontFamily: "'Playfair Display', serif", color: C.text, margin: 0,
+    },
+    cardSub: { fontSize: "14px", color: C.textSub, lineHeight: "1.7", margin: 0 },
+    fieldGroup: { display: "flex", flexDirection: "column", gap: "6px" },
+    textarea: {
+      background: C.bgInput, border: `1.5px solid ${C.border}`, borderRadius: "10px",
+      padding: "16px", color: C.text, fontSize: "15px", fontFamily: "'DM Sans', sans-serif",
+      lineHeight: "1.7", resize: "vertical", outline: "none",
+      transition: "border-color 0.2s, box-shadow 0.2s, background 0.2s",
+      width: "100%", boxSizing: "border-box", minHeight: "160px",
+    },
+    textareaErr: { borderColor: C.red, background: C.redLight },
+    charRow:  { display: "flex", justifyContent: "space-between", alignItems: "center" },
+    charNum:  { fontSize: "12px", fontFamily: "'IBM Plex Mono', monospace", transition: "color 0.2s" },
+    charErr:  { fontSize: "12px", color: C.red, fontWeight: "500" },
+    charWarn: { fontSize: "12px", color: C.amber, fontWeight: "500" },
+    optionsGrid: { display: "flex", flexDirection: "column", gap: "20px" },
+    optBlock:    { display: "flex", flexDirection: "column", gap: "8px" },
+    optLabel:    { fontSize: "10px", fontFamily: "'IBM Plex Mono', monospace", letterSpacing: "2px", color: C.muted },
+    segGroup:    { display: "flex", gap: "6px", flexWrap: "wrap" },
+    seg: {
+      background: C.bgMuted, border: `1.5px solid ${C.border}`, color: C.textSub,
+      fontFamily: "'IBM Plex Mono', monospace", fontSize: "12px", padding: "7px 14px",
+      cursor: "pointer", borderRadius: "8px", transition: "all 0.15s",
+    },
+    segOn: { background: C.amberLight, border: `1.5px solid ${C.amber}`, color: C.amber, fontWeight: "500" },
+    passRow: { display: "flex", gap: "8px" },
+    passInput: {
+      flex: 1, background: C.bgInput, border: `1.5px solid ${C.border}`, borderRadius: "10px",
+      padding: "10px 14px", color: C.text, fontSize: "14px", fontFamily: "'DM Sans', sans-serif",
+      outline: "none", transition: "border-color 0.2s, background 0.2s", boxSizing: "border-box",
+    },
+    passInputErr: { borderColor: C.red, background: C.redLight },
+    showPassBtn: {
+      background: C.bgMuted, border: `1.5px solid ${C.border}`, color: C.textSub,
+      fontFamily: "'IBM Plex Mono', monospace", fontSize: "10px", letterSpacing: "1px",
+      padding: "10px 14px", cursor: "pointer", borderRadius: "8px",
+      flexShrink: 0, transition: "all 0.15s",
+    },
+    primaryBtn: {
+      background: C.amber, color: "#fff", border: "none", padding: "14px 24px",
+      fontSize: "15px", fontFamily: "'DM Sans', sans-serif", fontWeight: "600",
+      cursor: "pointer", borderRadius: "10px", transition: "all 0.2s",
+      display: "flex", alignItems: "center", justifyContent: "center", gap: "8px",
+    },
+    primaryBtnOff: { background: C.border, color: C.muted, cursor: "not-allowed" },
+    burnBtn: {
+      background: "transparent", color: C.amber, border: `2px solid ${C.amber}`,
+      padding: "14px 24px", fontSize: "15px", fontFamily: "'DM Sans', sans-serif",
+      fontWeight: "600", cursor: "pointer", borderRadius: "10px", transition: "all 0.2s",
+    },
+    amberBtn: {
+      background: C.amberLight, border: `1.5px solid ${C.border}`, color: C.amber,
+      fontFamily: "'IBM Plex Mono', monospace", fontSize: "12px", padding: "9px 18px",
+      cursor: "pointer", borderRadius: "8px", transition: "all 0.2s", fontWeight: "500",
+    },
+    amberBtnDone: { background: C.greenLight, borderColor: C.green, color: C.green },
+    ghostBtn: {
+      background: "transparent", border: `1.5px solid ${C.border}`, color: C.muted,
+      fontFamily: "'IBM Plex Mono', monospace", fontSize: "12px", padding: "10px 18px",
+      cursor: "pointer", borderRadius: "8px", textDecoration: "none",
+      textAlign: "center", transition: "all 0.2s", display: "inline-block",
+    },
+    btnSpinner: {
+      display: "inline-block", width: "14px", height: "14px",
+      border: "2px solid rgba(255,255,255,0.3)", borderTop: "2px solid #fff",
+      borderRadius: "50%",
+    },
+    errorBox: {
+      background: C.redLight, border: `1px solid ${C.red}44`,
+      borderLeft: `3px solid ${C.red}`, borderRadius: "8px",
+      padding: "12px 16px", color: C.red, fontSize: "13px",
+      display: "flex", gap: "10px", alignItems: "center", fontWeight: "500",
+    },
+    errorIcon: {
+      border: `1.5px solid ${C.red}`, borderRadius: "50%",
+      width: "18px", height: "18px", textAlign: "center",
+      lineHeight: "17px", fontSize: "11px", flexShrink: 0, fontWeight: "700",
+    },
+    warningBox: {
+      background: C.amberLight, border: `1px solid ${C.amber}44`,
+      borderLeft: `3px solid ${C.amber}`, borderRadius: "8px",
+      padding: "12px 16px", fontSize: "13px", color: C.textSub,
+      display: "flex", gap: "10px", alignItems: "flex-start", lineHeight: "1.6",
+    },
+    warningIcon: { fontSize: "16px", flexShrink: 0 },
+    disclaimer: {
+      fontSize: "12px", color: C.muted, lineHeight: "1.7", margin: 0,
+      textAlign: "center", fontFamily: "'IBM Plex Mono', monospace",
+    },
+    successTop:  { display: "flex", alignItems: "flex-start", gap: "16px" },
+    successRing: {
+      width: "44px", height: "44px", borderRadius: "50%",
+      border: `2px solid ${C.green}`, background: C.greenLight,
+      display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0,
+    },
+    successCheck: { color: C.green, fontSize: "18px", fontWeight: "700" },
+    linkCard: {
+      background: C.bgMuted, border: `1.5px solid ${C.border}`, borderRadius: "10px",
+      padding: "18px 20px", display: "flex", flexDirection: "column", gap: "10px",
+      transition: "background 0.2s",
+    },
+    linkLabel: { fontSize: "9px", fontFamily: "'IBM Plex Mono', monospace", letterSpacing: "3px", color: C.muted },
+    linkValue:  { fontSize: "13px", fontFamily: "'IBM Plex Mono', monospace", color: C.text, wordBreak: "break-all", lineHeight: "1.5" },
+    loadRing:   { width: "32px", height: "32px", border: `2px solid ${C.border}`, borderTop: `2px solid ${C.amber}`, borderRadius: "50%" },
+    deadIcon:   { fontSize: "clamp(40px,8vw,56px)", textAlign: "center", color: C.amber, fontFamily: "'IBM Plex Mono', monospace", fontWeight: "700", letterSpacing: "-2px" },
+    phaseIcon:  { fontSize: "44px", textAlign: "center" },
+    pillRow:    { display: "flex", justifyContent: "center", gap: "8px", flexWrap: "wrap" },
+    pill: {
+      background: C.bgMuted, border: `1px solid ${C.border}`, borderRadius: "20px",
+      padding: "4px 12px", fontSize: "12px", fontFamily: "'IBM Plex Mono', monospace", color: C.muted,
+    },
+    destroyedBadge: {
+      background: C.greenLight, border: `1px solid ${C.green}44`, borderRadius: "8px",
+      padding: "10px 14px", fontSize: "12px", fontFamily: "'IBM Plex Mono', monospace",
+      color: C.green, textAlign: "center", fontWeight: "500",
+    },
+    contentBox: {
+      background: C.bgInput, border: `1.5px solid ${C.border}`, borderRadius: "10px",
+      padding: "20px", maxHeight: "400px", overflowY: "auto",
+    },
+    contentPre: {
+      margin: 0, fontSize: "15px", color: C.text, lineHeight: "1.7",
+      whiteSpace: "pre-wrap", wordBreak: "break-word", fontFamily: "'DM Sans', sans-serif",
+    },
+    footer: { padding: "20px clamp(16px,4vw,32px)", borderTop: `1px solid ${C.border}`, background: C.bgMuted, transition: "background 0.2s" },
+    footerInner: {
+      display: "flex", justifyContent: "space-between", alignItems: "center",
+      flexWrap: "wrap", gap: "12px", maxWidth: "1000px", margin: "0 auto",
+    },
+    footerBrand: { fontSize: "14px", fontWeight: "700", color: C.textSub, fontFamily: "'IBM Plex Mono', monospace", display: "flex", alignItems: "center", gap: "6px" },
+    footerMeta:  { fontSize: "11px", fontFamily: "'IBM Plex Mono', monospace", color: C.muted },
+    footerLink:  { display: "flex", alignItems: "center", color: C.muted, textDecoration: "none", fontSize: "12px", fontFamily: "'IBM Plex Mono', monospace", transition: "color 0.15s" },
+  };
+}
 
-const S = {
-  root: {
-    background: C.bg, minHeight: "100vh", fontFamily: "'DM Sans', sans-serif",
-    color: C.text, display: "flex", flexDirection: "column",
-    backgroundImage: "radial-gradient(ellipse at 20% 0%, rgba(200,120,32,0.06) 0%, transparent 60%), radial-gradient(ellipse at 80% 100%, rgba(200,120,32,0.04) 0%, transparent 60%)",
-  },
-  nav: {
-    display: "flex", justifyContent: "space-between", alignItems: "center",
-    padding: "0 32px", height: "60px", borderBottom: `1px solid ${C.border}`,
-    background: "rgba(250,245,238,0.96)", backdropFilter: "blur(8px)",
-    position: "sticky", top: 0, zIndex: 100,
-  },
-  navLogo: {
-    display: "flex", alignItems: "center", gap: "6px", fontSize: "17px",
-    fontWeight: "700", color: C.text, textDecoration: "none",
-    fontFamily: "'IBM Plex Mono', monospace", letterSpacing: "-0.5px",
-  },
-  navLogoGlyph: { color: C.amber, fontSize: "20px", fontFamily: "monospace" },
-  navRight: { display: "flex", alignItems: "center", gap: "24px" },
-  navLink: {
-    display: "flex", alignItems: "center", color: C.muted, textDecoration: "none",
-    fontSize: "13px", fontFamily: "'IBM Plex Mono', monospace", transition: "color 0.15s",
-  },
-  main: {
-    flex: 1, display: "flex", flexDirection: "column", alignItems: "center",
-    justifyContent: "center", padding: "48px 20px", gap: "40px",
-  },
-  hero: { textAlign: "center", maxWidth: "540px" },
-  heroBadge: {
-    display: "inline-block", background: C.amberLight, border: `1px solid ${C.border}`,
-    borderRadius: "20px", padding: "5px 16px", fontSize: "11px",
-    fontFamily: "'IBM Plex Mono', monospace", letterSpacing: "2px",
-    color: C.amber, marginBottom: "28px",
-  },
-  heroTitle: {
-    fontSize: "clamp(36px,7vw,64px)", fontWeight: "700", fontFamily: "'Playfair Display', serif",
-    color: C.text, margin: "0 0 18px 0", lineHeight: "1.1", letterSpacing: "-1.5px",
-  },
-  heroEmphasis: { fontStyle: "italic", color: C.amber },
-  heroSub: {
-    fontSize: "16px", color: C.textSub, lineHeight: "1.8", margin: 0,
-    maxWidth: "420px", marginLeft: "auto", marginRight: "auto",
-  },
-  card: {
-    background: C.bgCard, border: `1px solid ${C.border}`, borderRadius: "16px",
-    padding: "clamp(24px,4vw,40px)", width: "100%", maxWidth: "580px",
-    display: "flex", flexDirection: "column", gap: "24px",
-    boxShadow: "0 2px 8px rgba(26,15,0,0.06), 0 20px 48px rgba(26,15,0,0.08)",
-  },
-  cardTitle: {
-    fontSize: "22px", fontWeight: "700", fontFamily: "'Playfair Display', serif", color: C.text, margin: 0,
-  },
-  cardSub: { fontSize: "14px", color: C.textSub, lineHeight: "1.7", margin: 0 },
-  fieldGroup: { display: "flex", flexDirection: "column", gap: "6px" },
-  textarea: {
-    background: C.bgInput, border: `1.5px solid ${C.border}`, borderRadius: "10px",
-    padding: "16px", color: C.text, fontSize: "15px", fontFamily: "'DM Sans', sans-serif",
-    lineHeight: "1.7", resize: "vertical", outline: "none",
-    transition: "border-color 0.2s, box-shadow 0.2s", width: "100%", boxSizing: "border-box", minHeight: "160px",
-  },
-  textareaErr: { borderColor: C.red, background: C.redLight },
-  charRow: { display: "flex", justifyContent: "space-between", alignItems: "center" },
-  charNum: { fontSize: "12px", fontFamily: "'IBM Plex Mono', monospace", transition: "color 0.2s" },
-  charErr: { fontSize: "12px", color: C.red, fontWeight: "500" },
-  charWarn: { fontSize: "12px", color: C.amber, fontWeight: "500" },
-  optionsGrid: { display: "flex", flexDirection: "column", gap: "20px" },
-  optBlock: { display: "flex", flexDirection: "column", gap: "8px" },
-  optLabel: { fontSize: "10px", fontFamily: "'IBM Plex Mono', monospace", letterSpacing: "2px", color: C.muted },
-  optHint: { color: C.border },
-  segGroup: { display: "flex", gap: "6px", flexWrap: "wrap" },
-  seg: {
-    background: C.bgMuted, border: `1.5px solid ${C.border}`, color: C.textSub,
-    fontFamily: "'IBM Plex Mono', monospace", fontSize: "12px", padding: "7px 14px",
-    cursor: "pointer", borderRadius: "8px", transition: "all 0.15s",
-  },
-  segOn: { background: C.amberLight, border: `1.5px solid ${C.amber}`, color: C.amber, fontWeight: "500" },
-  passRow: { display: "flex", gap: "8px" },
-  passInput: {
-    flex: 1, background: C.bgInput, border: `1.5px solid ${C.border}`, borderRadius: "10px",
-    padding: "10px 14px", color: C.text, fontSize: "14px", fontFamily: "'DM Sans', sans-serif",
-    outline: "none", transition: "border-color 0.2s", boxSizing: "border-box",
-  },
-  passInputErr: { borderColor: C.red, background: C.redLight },
-  showPassBtn: {
-    background: C.bgMuted, border: `1.5px solid ${C.border}`, color: C.textSub,
-    fontFamily: "'IBM Plex Mono', monospace", fontSize: "10px", letterSpacing: "1px",
-    padding: "10px 14px", cursor: "pointer", borderRadius: "8px", flexShrink: 0, transition: "all 0.15s",
-  },
-  primaryBtn: {
-    background: C.amber, color: "#fff", border: "none", padding: "14px 24px",
-    fontSize: "15px", fontFamily: "'DM Sans', sans-serif", fontWeight: "600",
-    cursor: "pointer", borderRadius: "10px", transition: "all 0.2s",
-    display: "flex", alignItems: "center", justifyContent: "center", gap: "8px",
-  },
-  primaryBtnOff: { background: C.border, color: C.muted, cursor: "not-allowed" },
-  burnBtn: {
-    background: "transparent", color: C.amber, border: `2px solid ${C.amber}`,
-    padding: "14px 24px", fontSize: "15px", fontFamily: "'DM Sans', sans-serif",
-    fontWeight: "600", cursor: "pointer", borderRadius: "10px", transition: "all 0.2s",
-  },
-  amberBtn: {
-    background: C.amberLight, border: `1.5px solid ${C.border}`, color: C.amber,
-    fontFamily: "'IBM Plex Mono', monospace", fontSize: "12px", padding: "9px 18px",
-    cursor: "pointer", borderRadius: "8px", transition: "all 0.2s", fontWeight: "500",
-  },
-  amberBtnDone: { background: C.greenLight, borderColor: C.green, color: C.green },
-  ghostBtn: {
-    background: "transparent", border: `1.5px solid ${C.border}`, color: C.muted,
-    fontFamily: "'IBM Plex Mono', monospace", fontSize: "12px", padding: "10px 18px",
-    cursor: "pointer", borderRadius: "8px", textDecoration: "none",
-    textAlign: "center", transition: "all 0.2s", display: "inline-block",
-  },
-  btnSpinner: {
-    display: "inline-block", width: "14px", height: "14px",
-    border: "2px solid rgba(255,255,255,0.3)", borderTop: "2px solid #fff", borderRadius: "50%",
-  },
-  errorBox: {
-    background: C.redLight, border: `1px solid #f0c0bb`, borderLeft: `3px solid ${C.red}`,
-    borderRadius: "8px", padding: "12px 16px", color: C.red, fontSize: "13px",
-    display: "flex", gap: "10px", alignItems: "center", fontWeight: "500",
-  },
-  errorIcon: {
-    border: `1.5px solid ${C.red}`, borderRadius: "50%", width: "18px", height: "18px",
-    textAlign: "center", lineHeight: "17px", fontSize: "11px", flexShrink: 0, fontWeight: "700",
-  },
-  warningBox: {
-    background: C.amberLight, border: `1px solid #f0d890`, borderLeft: `3px solid ${C.amber}`,
-    borderRadius: "8px", padding: "12px 16px", fontSize: "13px", color: C.textSub,
-    display: "flex", gap: "10px", alignItems: "flex-start", lineHeight: "1.6",
-  },
-  warningIcon: { fontSize: "16px", flexShrink: 0 },
-  disclaimer: {
-    fontSize: "12px", color: C.muted, lineHeight: "1.7", margin: 0,
-    textAlign: "center", fontFamily: "'IBM Plex Mono', monospace",
-  },
-  successTop: { display: "flex", alignItems: "flex-start", gap: "16px" },
-  successRing: {
-    width: "44px", height: "44px", borderRadius: "50%", border: `2px solid ${C.green}`,
-    background: C.greenLight, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0,
-  },
-  successCheck: { color: C.green, fontSize: "18px", fontWeight: "700" },
-  linkCard: {
-    background: C.bgMuted, border: `1.5px solid ${C.border}`, borderRadius: "10px",
-    padding: "18px 20px", display: "flex", flexDirection: "column", gap: "10px",
-  },
-  linkLabel: { fontSize: "9px", fontFamily: "'IBM Plex Mono', monospace", letterSpacing: "3px", color: C.muted },
-  linkValue: { fontSize: "13px", fontFamily: "'IBM Plex Mono', monospace", color: C.text, wordBreak: "break-all", lineHeight: "1.5" },
-  loadRing: { width: "32px", height: "32px", border: `2px solid ${C.border}`, borderTop: `2px solid ${C.amber}`, borderRadius: "50%" },
-  deadIcon: { fontSize: "clamp(40px,8vw,56px)", textAlign: "center", color: C.amber, fontFamily: "'IBM Plex Mono', monospace", fontWeight: "700", letterSpacing: "-2px" },
-  phaseIcon: { fontSize: "44px", textAlign: "center" },
-  pillRow: { display: "flex", justifyContent: "center", gap: "8px", flexWrap: "wrap" },
-  pill: {
-    background: C.bgMuted, border: `1px solid ${C.border}`, borderRadius: "20px",
-    padding: "4px 12px", fontSize: "12px", fontFamily: "'IBM Plex Mono', monospace", color: C.muted,
-  },
-  destroyedBadge: {
-    background: C.greenLight, border: `1px solid #b8dfc8`, borderRadius: "8px",
-    padding: "10px 14px", fontSize: "12px", fontFamily: "'IBM Plex Mono', monospace",
-    color: C.green, textAlign: "center", fontWeight: "500",
-  },
-  contentBox: {
-    background: C.bgInput, border: `1.5px solid ${C.border}`, borderRadius: "10px",
-    padding: "20px", maxHeight: "400px", overflowY: "auto",
-  },
-  contentPre: {
-    margin: 0, fontSize: "15px", color: C.text, lineHeight: "1.7",
-    whiteSpace: "pre-wrap", wordBreak: "break-word", fontFamily: "'DM Sans', sans-serif",
-  },
-  footer: { padding: "20px 32px", borderTop: `1px solid ${C.border}`, background: C.bgMuted },
-  footerInner: {
-    display: "flex", justifyContent: "space-between", alignItems: "center",
-    flexWrap: "wrap", gap: "12px", maxWidth: "1000px", margin: "0 auto",
-  },
-  footerBrand: { fontSize: "14px", fontWeight: "700", color: C.textSub, fontFamily: "'IBM Plex Mono', monospace", display: "flex", alignItems: "center", gap: "6px" },
-  footerMeta: { fontSize: "11px", fontFamily: "'IBM Plex Mono', monospace", color: C.muted },
-  footerLink: { display: "flex", alignItems: "center", color: C.muted, textDecoration: "none", fontSize: "12px", fontFamily: "'IBM Plex Mono', monospace", transition: "color 0.15s" },
-};
+function globalCSS(C) {
+  return `
+    * { box-sizing: border-box; }
+    body { margin: 0; background: ${C.bg}; transition: background 0.2s; }
+    *:focus-visible { outline: 2px solid ${C.amber}; outline-offset: 2px; border-radius: 4px; }
 
-const CSS = `
-  * { box-sizing: border-box; }
-  body { margin: 0; background: ${C.bg}; }
-  *:focus-visible { outline: 2px solid ${C.amber}; outline-offset: 2px; border-radius: 4px; }
+    .seg:hover           { border-color: ${C.amber} !important; color: ${C.amber} !important; background: ${C.amberLight} !important; }
+    .seg-on              { pointer-events: none; }
+    .show-pass-btn:hover { border-color: ${C.amber} !important; color: ${C.amber} !important; }
+    .primary-btn:not(:disabled):hover { background: ${C.amberHover} !important; transform: translateY(-1px); box-shadow: 0 6px 20px ${C.amber}44; }
+    .burn-btn:not(:disabled):hover    { background: ${C.amberLight} !important; }
+    .amber-btn:hover { border-color: ${C.amber} !important; background: ${C.amberLight} !important; filter: brightness(1.05); }
+    .ghost-btn:hover { border-color: ${C.amber} !important; color: ${C.amber} !important; }
 
-  .nav-link:hover      { color: ${C.amber} !important; }
-  .seg:hover           { border-color: ${C.amber} !important; color: ${C.amber} !important; background: ${C.amberLight} !important; }
-  .seg-on              { pointer-events: none; }
-  .show-pass-btn:hover { border-color: ${C.amber} !important; color: ${C.amber} !important; }
-  .primary-btn:not(:disabled):hover { background: ${C.amberHover} !important; transform: translateY(-1px); box-shadow: 0 6px 20px rgba(200,120,32,0.25); }
-  .burn-btn:not(:disabled):hover    { background: ${C.amberLight} !important; }
-  .amber-btn:hover  { border-color: ${C.amber} !important; background: #fef0d0 !important; }
-  .ghost-btn:hover  { border-color: ${C.amber} !important; color: ${C.amber} !important; }
+    .note-textarea:focus { border-color: ${C.amber} !important; box-shadow: 0 0 0 3px ${C.amber}22 !important; }
+    .note-textarea::placeholder { color: ${C.border}; }
+    .pass-input:focus { border-color: ${C.amber} !important; box-shadow: 0 0 0 3px ${C.amber}22 !important; }
+    .pass-input::placeholder { color: ${C.border}; }
 
-  .note-textarea:focus { border-color: ${C.amber} !important; box-shadow: 0 0 0 3px rgba(200,120,32,0.12) !important; }
-  .note-textarea::placeholder { color: ${C.border}; }
-  .pass-input:focus { border-color: ${C.amber} !important; box-shadow: 0 0 0 3px rgba(200,120,32,0.12) !important; }
-  .pass-input::placeholder { color: ${C.border}; }
+    .spin     { animation: spin 0.8s linear infinite; }
+    .btn-spin { animation: spin 0.7s linear infinite; display: inline-block; }
+    @keyframes spin { to { transform: rotate(360deg); } }
 
-  .spin     { animation: spin 0.8s linear infinite; }
-  .btn-spin { animation: spin 0.7s linear infinite; display: inline-block; }
-  @keyframes spin { to { transform: rotate(360deg); } }
+    .fade-in { animation: fadeUp 0.3s cubic-bezier(0.4,0,0.2,1) forwards; }
+    @keyframes fadeUp {
+      from { opacity: 0; transform: translateY(10px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
 
-  .fade-in { animation: fadeUp 0.3s cubic-bezier(0.4,0,0.2,1) forwards; }
-  @keyframes fadeUp {
-    from { opacity: 0; transform: translateY(10px); }
-    to   { opacity: 1; transform: translateY(0); }
-  }
+    ::selection { background: ${C.selectionBg}; }
+    ::-webkit-scrollbar { width: 5px; }
+    ::-webkit-scrollbar-track { background: ${C.bgMuted}; }
+    ::-webkit-scrollbar-thumb { background: ${C.scrollThumb}; border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: ${C.amber}; }
 
-  ::selection { background: rgba(200,120,32,0.18); }
-  ::-webkit-scrollbar { width: 5px; }
-  ::-webkit-scrollbar-track { background: ${C.bgMuted}; }
-  ::-webkit-scrollbar-thumb { background: ${C.border}; border-radius: 3px; }
-  ::-webkit-scrollbar-thumb:hover { background: ${C.amber}; }
-`;
+    ul li::marker { color: ${C.amber}; }
+
+    @media (max-width: 480px) {
+      .note-textarea { resize: none !important; }
+    }
+
+    /* Google Translate — suppress the banner */
+    #google_translate_element          { display: none !important; }
+    .goog-te-banner-frame              { display: none !important; }
+    .goog-te-menu-value                { display: none !important; }
+    .goog-tooltip                      { display: none !important; }
+    .goog-text-highlight               { background: none !important; box-shadow: none !important; }
+    body                               { top: 0 !important; position: static !important; }
+    body.translated-ltr,
+    body.translated-rtl                { margin-top: 0 !important; }
+  `;
+}
